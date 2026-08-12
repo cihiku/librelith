@@ -1,0 +1,6 @@
+[package]
+name = "librelith_assets"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

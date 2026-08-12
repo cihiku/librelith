@@ -1,0 +1,5 @@
+.*
+!.gitignore
+!.cargo/
+target/
+result

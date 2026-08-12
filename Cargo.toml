@@ -1,0 +1,18 @@
+[package]
+name = "librelith"
+version.workspace = true
+edition.workspace = true
+
+[workspace]
+resolver = "3"
+members = ["crates/assets"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+assets = { package = "librelith_assets", path = "crates/assets" }
+
+[dependencies]
+assets.workspace = true

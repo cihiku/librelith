@@ -1,0 +1,7 @@
+[schema]
+enabled = true
+
+[[schemas]]
+toml-version = "v1.0.0"
+path = "schemas/cargo.json"
+include = ["**/Cargo.toml"]
