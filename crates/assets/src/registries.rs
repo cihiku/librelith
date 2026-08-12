@@ -4,7 +4,7 @@ use core::{
     fmt::Display,
 };
 
-use alloc::{boxed::Box, collections::btree_map::BTreeMap};
+use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{BuildError, Name, Registry, RegistryBuilder, registry::Data};
 
@@ -22,11 +22,30 @@ pub enum RegistriesError {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RegistriesBuildError {
+    errors: Vec<RegistriesBuildErrorKind>,
+}
+
+impl RegistriesBuildError {
+    pub fn errors(&self) -> &[RegistriesBuildErrorKind] {
+        &self.errors
+    }
+}
+
+impl Error for RegistriesBuildError {}
+
+impl Display for RegistriesBuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "failed to build this many kinds {}", self.errors.len())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RegistriesBuildErrorKind {
     pub name: Name,
     pub build: BuildError,
 }
 
-impl Error for RegistriesBuildError {
+impl Error for RegistriesBuildErrorKind {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.build)
     }
@@ -43,7 +62,7 @@ impl Display for RegistriesError {
     }
 }
 
-impl Display for RegistriesBuildError {
+impl Display for RegistriesBuildErrorKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "failed to build kind {}", self.name)
     }
@@ -110,14 +129,25 @@ impl RegistriesBuilder {
 
     pub fn build(self) -> Result<Registries, RegistriesBuildError> {
         let mut registries = BTreeMap::new();
+        let mut err = RegistriesBuildError { errors: Vec::new() };
         for (type_id, (builder, build_kind, name)) in self.kinds {
-            let registry = build_kind(builder).map_err(|e| RegistriesBuildError {
+            match build_kind(builder).map_err(|e| RegistriesBuildErrorKind {
                 name: name.clone(),
                 build: e,
-            })?;
-            registries.insert(type_id, (registry, name));
+            }) {
+                Ok(registry) => {
+                    registries.insert(type_id, (registry, name));
+                }
+                Err(e) => {
+                    err.errors.push(e);
+                }
+            };
         }
-        Ok(Registries { registries })
+        if err.errors.is_empty() {
+            Ok(Registries { registries })
+        } else {
+            Err(err)
+        }
     }
 }
 
@@ -127,7 +157,7 @@ mod tests {
 
     use crate::{
         BuildError, Facet, Name, Registries, RegistriesError, Storage,
-        registries::RegistriesBuildError,
+        registries::RegistriesBuildErrorKind, registry::BuildErrorKind,
     };
 
     struct Block;
@@ -200,14 +230,32 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            b.build().map(|_| ()).unwrap_err(),
-            RegistriesBuildError {
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![RegistriesBuildErrorKind {
                 name: n("t:block"),
-                build: BuildError::MissingComponent {
-                    entry: n("t:stone"),
-                    component: type_name::<Model>()
+                build: BuildError {
+                    errors: alloc::vec![BuildErrorKind::MissingComponent {
+                        entry: n("t:stone"),
+                        component: type_name::<Model>()
+                    }]
                 }
-            }
+            }]
         );
+    }
+
+    #[test]
+    fn two_failing_kinds_both_reported() {
+        let mut b = Registries::builder();
+        b.add_kind::<Block>(n("t:block"), |k| {
+            k.declare::<Model>();
+            k.entry(n("t:stone")).unwrap();
+        })
+        .unwrap()
+        .add_kind::<Item>(n("t:item"), |k| {
+            k.declare::<Model>();
+            k.entry(n("t:stick")).unwrap();
+        })
+        .unwrap();
+        assert_eq!(b.build().map(|_| ()).unwrap_err().errors.len(), 2)
     }
 }

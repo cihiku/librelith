@@ -19,7 +19,18 @@ pub enum RegistryError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuildError {
+pub struct BuildError {
+    pub(crate) errors: Vec<BuildErrorKind>,
+}
+
+impl BuildError {
+    pub fn errors(&self) -> &[BuildErrorKind] {
+        &self.errors
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildErrorKind {
     MissingComponent {
         entry: Name,
         component: &'static str,
@@ -33,19 +44,29 @@ pub enum BuildError {
 impl core::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            RegistryError::DuplicateName(name) => write!(f, "{name} already in registry"),
-            RegistryError::UnknownName(name) => write!(f, "{name} is unknown to registry"),
+            Self::DuplicateName(name) => write!(f, "{name} already in registry"),
+            Self::UnknownName(name) => write!(f, "{name} is unknown to registry"),
         }
     }
 }
 
 impl core::fmt::Display for BuildError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} build errors: ", self.errors.len())?;
+        for (i, error) in self.errors.iter().enumerate() {
+            write!(f, "{i}. {error}: ")?
+        }
+        Ok(())
+    }
+}
+
+impl core::fmt::Display for BuildErrorKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            BuildError::MissingComponent { entry, component } => {
+            Self::MissingComponent { entry, component } => {
                 write!(f, "{entry} missing {component}")
             }
-            BuildError::DuplicateComponent { entry, component } => {
+            Self::DuplicateComponent { entry, component } => {
                 write!(f, "{entry} has duplicate {component}")
             }
         }
@@ -111,9 +132,11 @@ fn finish<K: 'static, C: Facet>(
         .collect();
     pairs.sort_by_key(|pair| pair.0);
 
+    let mut errors: Vec<BuildErrorKind> = Vec::new();
+
     for pair in pairs.windows(2) {
         if pair[0].0 == pair[1].0 {
-            return Err(BuildError::DuplicateComponent {
+            errors.push(BuildErrorKind::DuplicateComponent {
                 entry: names[pair[0].0 as usize].clone(),
                 component: type_name::<C>(),
             });
@@ -138,25 +161,28 @@ fn finish<K: 'static, C: Facet>(
             Column::<K, C>::dense(values)
         }
         Storage::Required => {
-            for (expected, pair) in pairs.iter().enumerate() {
-                if pair.0 != expected as u32 {
-                    return Err(BuildError::MissingComponent {
-                        entry: names[expected].clone(),
+            let mut idx = 0;
+            for (id, name) in names.iter().enumerate() {
+                let present = idx < pairs.len() && pairs[idx].0 == id as u32;
+                while idx < pairs.len() && pairs[idx].0 == id as u32 {
+                    idx += 1;
+                }
+                if !present {
+                    errors.push(BuildErrorKind::MissingComponent {
+                        entry: name.clone(),
                         component: type_name::<C>(),
                     });
                 }
-            }
-            if pairs.len() != names.len() {
-                return Err(BuildError::MissingComponent {
-                    entry: names[pairs.len()].clone(),
-                    component: type_name::<C>(),
-                });
             }
             Column::<K, C>::dense(pairs.into_iter().map(|(_, value)| value).collect())
         }
     };
 
-    Ok(Box::new(column))
+    if !errors.is_empty() {
+        Err(BuildError { errors })
+    } else {
+        Ok(Box::new(column))
+    }
 }
 
 impl<K: 'static> RegistryBuilder<K> {
@@ -212,15 +238,26 @@ impl<K: 'static> RegistryBuilder<K> {
             names.push(name.clone());
         }
         let mut columns = BTreeMap::new();
+        let mut err = BuildError { errors: Vec::new() };
         for (type_id, stage) in self.stages {
-            let column = (stage.finish)(stage.data, &perm, &names)?;
-            columns.insert(type_id, column);
+            match (stage.finish)(stage.data, &perm, &names) {
+                Ok(column) => {
+                    columns.insert(type_id, column);
+                }
+                Err(mut e) => {
+                    err.errors.append(&mut e.errors);
+                }
+            }
         }
-        Ok(Registry {
-            names,
-            columns,
-            _k: PhantomData,
-        })
+        if err.errors.is_empty() {
+            Ok(Registry {
+                names,
+                columns,
+                _k: PhantomData,
+            })
+        } else {
+            Err(err)
+        }
     }
 }
 
@@ -294,7 +331,7 @@ mod tests {
         BuildError, Id,
         facet::{Facet, Storage},
         name::Name,
-        registry::{RegistryBuilder, RegistryError},
+        registry::{BuildErrorKind, RegistryBuilder, RegistryError},
     };
 
     #[derive(Debug)]
@@ -438,11 +475,17 @@ mod tests {
         b.entry(n("t:a")).unwrap().with(Solid(true));
         b.entry(n("t:b")).unwrap();
         assert_eq!(
-            b.build().map(|_| ()).unwrap_err(),
-            BuildError::MissingComponent {
-                entry: n("t:a"),
-                component: type_name::<Model>()
-            }
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![
+                BuildErrorKind::MissingComponent {
+                    entry: n("t:a"),
+                    component: type_name::<Model>()
+                },
+                BuildErrorKind::MissingComponent {
+                    entry: n("t:b"),
+                    component: type_name::<Model>()
+                }
+            ]
         )
     }
 
@@ -455,11 +498,50 @@ mod tests {
             .with(Solid(false));
         b.entry(n("t:b")).unwrap();
         assert_eq!(
-            b.build().map(|_| ()).unwrap_err(),
-            BuildError::DuplicateComponent {
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::DuplicateComponent {
                 entry: n("t:a"),
                 component: type_name::<Solid>()
-            }
+            }]
         );
+    }
+
+    #[test]
+    fn require_present_is_not_reported() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap().with(Model(1));
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::MissingComponent {
+                entry: n("t:a"),
+                component: type_name::<Model>()
+            }]
+        )
+    }
+
+    #[test]
+    fn duplicate_does_not_fake_missing() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:a")).unwrap().with(Model(1)).with(Model(2));
+        b.entry(n("t:b")).unwrap().with(Model(3));
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::DuplicateComponent {
+                entry: n("t:a"),
+                component: type_name::<Model>()
+            }]
+        )
+    }
+
+    #[test]
+    fn triple_attach_reports_two_duplicates() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:a"))
+            .unwrap()
+            .with(Model(1))
+            .with(Model(2))
+            .with(Model(3));
+        assert_eq!(b.build().map(|_| ()).unwrap_err().errors.len(), 2)
     }
 }
