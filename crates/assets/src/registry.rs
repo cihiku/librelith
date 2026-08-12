@@ -328,7 +328,7 @@ mod tests {
     use core::any::type_name;
 
     use crate::{
-        BuildError, Id,
+        Id,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},

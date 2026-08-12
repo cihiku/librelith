@@ -2,6 +2,12 @@
 name = "librelith"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [workspace]
 resolver = "3"
@@ -10,9 +16,16 @@ members = ["crates/assets"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+description = "Voxel engine toolkit"
+readme = "README.md"
+homepage = "https://github.com/cihiku/librelith"
+repository = "https://github.com/cihiku/librelith"
+license = "MIT OR Apache-2.0"
+keywords = ["engine", "game", "no_std", "toolkit", "voxel"]
+categories = ["game-development", "game-engines"]
 
 [workspace.dependencies]
-assets = { package = "librelith_assets", path = "crates/assets" }
+assets = { package = "librelith_assets", path = "crates/assets", version = "0.1.0" }
 
 [dependencies]
 assets.workspace = true

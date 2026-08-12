@@ -2,5 +2,11 @@
 name = "librelith_assets"
 version.workspace = true
 edition.workspace = true
+description = "Asset registry part of toolkit"
+readme.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
