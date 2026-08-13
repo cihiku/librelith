@@ -1,5 +1,5 @@
 use core::{
-    any::{type_name, Any, TypeId},
+    any::{Any, TypeId, type_name},
     error::Error,
     marker::PhantomData,
 };
@@ -39,6 +39,21 @@ pub enum BuildErrorKind {
         entry: Name,
         component: &'static str,
     },
+    PinOutOfRange {
+        entry: Name,
+        slot: u32,
+        len: u32,
+    },
+    PinConflict {
+        first: Name,
+        second: Name,
+        slot: u32,
+    },
+    DoublePin {
+        entry: Name,
+        first: u32,
+        second: u32,
+    },
 }
 
 impl core::fmt::Display for RegistryError {
@@ -71,6 +86,23 @@ impl core::fmt::Display for BuildErrorKind {
             Self::DuplicateComponent { entry, component } => {
                 write!(f, "{entry} has duplicate {component}")
             }
+            Self::PinOutOfRange { entry, slot, len } => {
+                write!(f, "{entry} pinned to {slot} but registry has {len} entries")
+            }
+            Self::PinConflict {
+                first,
+                second,
+                slot,
+            } => {
+                write!(f, "slot {slot} pinned to both {first} and {second}")
+            }
+            Self::DoublePin {
+                entry,
+                first,
+                second,
+            } => {
+                write!(f, "{entry} pinned to both {first} and {second} slots")
+            }
         }
     }
 }
@@ -82,6 +114,7 @@ pub struct RegistryBuilder<K> {
     index: BTreeMap<Name, u32>,
     next: u32,
     stages: BTreeMap<TypeId, Stage>,
+    pins: Vec<(u32, u32)>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -103,11 +136,17 @@ impl<'a, K: 'static> EntryRef<'a, K> {
         self.builder.stage::<C>().push((self.index, value));
         self
     }
+
+    pub fn pin(self, id: Id<K>) -> Self {
+        self.builder.pins.push((self.index, id.raw()));
+        self
+    }
 }
 
 pub struct Registry<K> {
     names: Vec<Name>,
     columns: BTreeMap<TypeId, Data>,
+    sorted: Vec<u32>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -117,6 +156,7 @@ impl<K> Default for RegistryBuilder<K> {
             index: Default::default(),
             stages: Default::default(),
             next: Default::default(),
+            pins: Default::default(),
             _k: PhantomData,
         }
     }
@@ -212,10 +252,7 @@ impl<K: 'static> RegistryBuilder<K> {
 
     pub fn new() -> Self {
         Self {
-            index: BTreeMap::new(),
-            stages: BTreeMap::new(),
-            next: 0,
-            _k: PhantomData,
+            ..Default::default()
         }
     }
 
@@ -234,13 +271,56 @@ impl<K: 'static> RegistryBuilder<K> {
 
     pub fn build(self) -> Result<Registry<K>, BuildError> {
         let mut perm = alloc::vec![0u32; self.next as usize];
-        let mut names = Vec::with_capacity(self.next as usize);
-        for (id, (name, &old)) in self.index.iter().enumerate() {
-            perm[old as usize] = id as u32;
-            names.push(name.clone());
-        }
+        let mut by_entry = BTreeMap::new();
+        let mut by_slot = BTreeMap::new();
         let mut columns = BTreeMap::new();
         let mut err = BuildError { errors: Vec::new() };
+        let mut by_old = alloc::vec![None; self.next as usize];
+        let mut names_by_id = by_old.clone();
+        for (name, &old) in &self.index {
+            by_old[old as usize] = Some(name);
+        }
+        let mut sorted = Vec::with_capacity(self.next as usize);
+        let name_of = |i: u32| by_old[i as usize].unwrap().clone();
+        for (i, slot) in self.pins {
+            if let Some(&first) = by_entry.get(&i) {
+                err.errors.push(BuildErrorKind::DoublePin {
+                    entry: name_of(i),
+                    first,
+                    second: slot,
+                });
+            } else if slot >= self.next {
+                err.errors.push(BuildErrorKind::PinOutOfRange {
+                    entry: name_of(i),
+                    slot,
+                    len: self.next,
+                });
+            } else if let Some(&first) = by_slot.get(&slot) {
+                err.errors.push(BuildErrorKind::PinConflict {
+                    first: name_of(first),
+                    second: name_of(i),
+                    slot,
+                });
+            } else {
+                by_entry.insert(i, slot);
+                by_slot.insert(slot, i);
+            }
+        }
+        let mut free = (0..self.next).filter(|s| !by_slot.contains_key(s));
+        for (name, &old) in &self.index {
+            let id = match by_entry.get(&old) {
+                Some(&slot) => slot,
+                None => free.next().unwrap(),
+            };
+            perm[old as usize] = id;
+            names_by_id[id as usize] = Some(name);
+            sorted.push(id);
+        }
+        let names: Vec<Name> = names_by_id
+            .into_iter()
+            .map(Option::unwrap)
+            .cloned()
+            .collect();
         for (type_id, stage) in self.stages {
             match (stage.finish)(stage.data, &perm, &names) {
                 Ok(column) => {
@@ -255,6 +335,7 @@ impl<K: 'static> RegistryBuilder<K> {
             Ok(Registry {
                 names,
                 columns,
+                sorted,
                 _k: PhantomData,
             })
         } else {
@@ -279,10 +360,10 @@ impl<K: 'static> Registry<K> {
     }
 
     pub fn id(&self, name: impl AsRef<str>) -> Option<Id<K>> {
-        self.names
-            .binary_search_by(|n| n.as_str().cmp(name.as_ref()))
+        self.sorted
+            .binary_search_by(|&i| self.names[i as usize].as_str().cmp(name.as_ref()))
             .ok()
-            .map(|i| Id::from_raw(i as u32))
+            .map(|i| Id::from_raw(self.sorted[i]))
     }
 
     pub fn name(&self, id: Id<K>) -> Option<&Name> {
@@ -330,10 +411,10 @@ mod tests {
     use core::any::type_name;
 
     use crate::{
+        Id,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},
-        Id,
     };
 
     #[derive(Debug)]
@@ -545,5 +626,182 @@ mod tests {
             .with(Model(2))
             .with(Model(3));
         assert_eq!(b.build().map(|_| ()).unwrap_err().errors.len(), 2)
+    }
+
+    #[test]
+    fn pin() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c")).unwrap().pin(Id::from_raw(0));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        let r = b.build().unwrap();
+        assert_eq!(r.id("t:c").unwrap().raw(), 0);
+        assert_eq!(r.id("t:a").unwrap().raw(), 1);
+        assert_eq!(r.id("t:b").unwrap().raw(), 2);
+    }
+
+    #[test]
+    fn pinned_in_order() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c")).unwrap().pin(Id::from_raw(2));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        let r = b.build().unwrap();
+        assert_eq!(r.id("t:a").unwrap().raw(), 0);
+        assert_eq!(r.id("t:b").unwrap().raw(), 1);
+        assert_eq!(r.id("t:c").unwrap().raw(), 2);
+    }
+
+    #[test]
+    fn pinned_in_middle() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c")).unwrap().pin(Id::from_raw(1));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        let r = b.build().unwrap();
+        assert_eq!(r.id("t:a").unwrap().raw(), 0);
+        assert_eq!(r.id("t:c").unwrap().raw(), 1);
+        assert_eq!(r.id("t:b").unwrap().raw(), 2);
+    }
+
+    #[test]
+    fn pinned_out_of_range() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c")).unwrap().pin(Id::from_raw(3));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::PinOutOfRange {
+                entry: n("t:c"),
+                slot: 3,
+                len: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn pin_conflict() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c")).unwrap().pin(Id::from_raw(0));
+        b.entry(n("t:a")).unwrap().pin(Id::from_raw(0));
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::PinConflict {
+                first: n("t:c"),
+                second: n("t:a"),
+                slot: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn triple_pinned() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c"))
+            .unwrap()
+            .pin(Id::from_raw(1))
+            .pin(Id::from_raw(2))
+            .pin(Id::from_raw(9));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![
+                BuildErrorKind::DoublePin {
+                    entry: n("t:c"),
+                    first: 1,
+                    second: 2
+                },
+                BuildErrorKind::DoublePin {
+                    entry: n("t:c"),
+                    first: 1,
+                    second: 9
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn double_pinned() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c"))
+            .unwrap()
+            .pin(Id::from_raw(1))
+            .pin(Id::from_raw(9));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::DoublePin {
+                entry: n("t:c"),
+                first: 1,
+                second: 9
+            }]
+        );
+    }
+
+    #[test]
+    fn double_pinned_with_same_id() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c"))
+            .unwrap()
+            .pin(Id::from_raw(1))
+            .pin(Id::from_raw(1));
+        b.entry(n("t:a")).unwrap();
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::DoublePin {
+                entry: n("t:c"),
+                first: 1,
+                second: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn double_pinned_twice() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c"))
+            .unwrap()
+            .pin(Id::from_raw(1))
+            .pin(Id::from_raw(9));
+        b.entry(n("t:a"))
+            .unwrap()
+            .pin(Id::from_raw(2))
+            .pin(Id::from_raw(8));
+        b.entry(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![
+                BuildErrorKind::DoublePin {
+                    entry: n("t:c"),
+                    first: 1,
+                    second: 9
+                },
+                BuildErrorKind::DoublePin {
+                    entry: n("t:a"),
+                    first: 2,
+                    second: 8
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn facet_follows_pin() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:c"))
+            .unwrap()
+            .pin(Id::from_raw(0))
+            .with(Hardness(5));
+        b.entry(n("t:a")).unwrap();
+        let r = b.build().unwrap();
+        let c = r.id("t:c").unwrap();
+        let a = r.id("t:a").unwrap();
+        assert_eq!(r.column::<Hardness>().unwrap().get(c).unwrap().0, 5);
+        assert_eq!(r.column::<Hardness>().unwrap().get(a), None);
     }
 }
