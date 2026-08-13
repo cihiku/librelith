@@ -15,7 +15,6 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
     DuplicateName(Name),
-    UnknownName(Name),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +59,6 @@ impl core::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::DuplicateName(name) => write!(f, "{name} already in registry"),
-            Self::UnknownName(name) => write!(f, "{name} is unknown to registry"),
         }
     }
 }
@@ -126,9 +124,57 @@ struct Stage {
     finish: Finish,
 }
 
+pub struct Entry<'a, K> {
+    builder: &'a mut RegistryBuilder<K>,
+    name: Name,
+    index: Option<u32>,
+}
+
 pub struct EntryRef<'a, K> {
     builder: &'a mut RegistryBuilder<K>,
     index: u32,
+}
+
+impl<'a, K: 'static> Entry<'a, K> {
+    pub fn create(self) -> Result<EntryRef<'a, K>, RegistryError> {
+        match self.index {
+            Some(_) => Err(RegistryError::DuplicateName(self.name)),
+            None => Ok(self.insert()),
+        }
+    }
+
+    pub fn or_create(self) -> EntryRef<'a, K> {
+        self.or_init(|e| e)
+    }
+
+    pub fn or_init(self, f: impl FnOnce(EntryRef<'a, K>) -> EntryRef<'a, K>) -> EntryRef<'a, K> {
+        match self.index {
+            Some(index) => EntryRef {
+                builder: self.builder,
+                index,
+            },
+            None => f(self.insert()),
+        }
+    }
+
+    pub fn or_with<C: Facet>(self, value: C) -> EntryRef<'a, K> {
+        self.or_init(|e| e.with(value))
+    }
+
+    pub fn get(self) -> Option<EntryRef<'a, K>> {
+        self.index.map(|index| EntryRef {
+            builder: self.builder,
+            index,
+        })
+    }
+
+    fn insert(self) -> EntryRef<'a, K> {
+        let Entry { builder, name, .. } = self;
+        let index = builder.next;
+        builder.next += 1;
+        builder.index.insert(name, index);
+        EntryRef { builder, index }
+    }
 }
 
 impl<'a, K: 'static> EntryRef<'a, K> {
@@ -228,13 +274,6 @@ fn finish<K: 'static, C: Facet>(
 }
 
 impl<K: 'static> RegistryBuilder<K> {
-    pub fn attach<C: Facet>(&mut self, name: &Name, value: C) -> Result<(), RegistryError> {
-        let Some(index) = self.index.get(name).cloned() else {
-            return Err(RegistryError::UnknownName(name.clone()));
-        };
-        self.stage::<C>().push((index, value));
-        Ok(())
-    }
     pub fn declare<C: Facet>(&mut self) {
         self.stage::<C>();
     }
@@ -256,17 +295,20 @@ impl<K: 'static> RegistryBuilder<K> {
         }
     }
 
-    pub fn entry(&mut self, name: Name) -> Result<EntryRef<'_, K>, RegistryError> {
-        if self.index.contains_key(&name) {
-            return Err(RegistryError::DuplicateName(name));
-        }
-        let index = self.next;
-        self.next += 1;
-        self.index.insert(name, index);
-        Ok(EntryRef {
+    pub fn create(&mut self, name: Name) -> Result<EntryRef<'_, K>, RegistryError> {
+        self.entry(name).create()
+    }
+
+    pub fn contains(&self, name: impl AsRef<str>) -> bool {
+        self.index.contains_key(name.as_ref())
+    }
+
+    pub fn entry(&mut self, name: Name) -> Entry<'_, K> {
+        Entry {
+            index: self.index.get(&name).copied(),
             builder: self,
-            index,
-        })
+            name,
+        }
     }
 
     pub fn build(self) -> Result<Registry<K>, BuildError> {
@@ -443,9 +485,9 @@ mod tests {
     #[test]
     fn ids_follow_name_order() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap();
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         assert_eq!(r.id("t:a").unwrap().raw(), 0);
         assert_eq!(r.id("t:b").unwrap().raw(), 1);
@@ -455,9 +497,9 @@ mod tests {
     #[test]
     fn duplicate_name() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap();
+        b.create(n("t:a")).unwrap();
         assert_eq!(
-            b.entry(n("t:a")).err(),
+            b.create(n("t:a")).err(),
             Some(RegistryError::DuplicateName(n("t:a")))
         )
     }
@@ -465,8 +507,8 @@ mod tests {
     #[test]
     fn value_follows_entry_through_the_sort() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().with(Hardness(5));
-        b.entry(n("t:a")).unwrap();
+        b.create(n("t:c")).unwrap().with(Hardness(5));
+        b.create(n("t:a")).unwrap();
         let r = b.build().unwrap();
         let col = r.column::<Hardness>().unwrap();
         let c = r.id("t:c").unwrap();
@@ -478,8 +520,8 @@ mod tests {
     #[test]
     fn dense_fills_missing_entries() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let col = r.column::<Solid>().unwrap();
         assert_eq!(col[r.id("t:a").unwrap()], Solid(true));
@@ -489,8 +531,8 @@ mod tests {
     #[test]
     fn remap_reports_missing() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let remap = r.remap([n("t:b"), n("t:x"), n("t:a")].iter());
         assert_eq!(remap.slots, [r.id("t:b"), None, r.id("t:a")]);
@@ -500,8 +542,8 @@ mod tests {
     #[test]
     fn column_on_never_added() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let hardness_column = r.column::<Hardness>();
         assert!(hardness_column.is_none())
@@ -510,8 +552,8 @@ mod tests {
     #[test]
     fn get_on_never_added() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let solid_column = r.column::<Solid>().unwrap();
         let something_solid = solid_column.get(Id::from_raw(100));
@@ -521,31 +563,28 @@ mod tests {
     #[test]
     fn get_id_on_unknown_name() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let c = r.id("t:c");
         assert!(c.is_none())
     }
 
     #[test]
-    fn attach_unknown_name() {
+    fn get_unknown_name() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
-        assert_eq!(
-            b.attach(&n("t:c"), Hardness(15)),
-            Err(RegistryError::UnknownName(n("t:c")))
-        );
-        b.build().unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
+        assert!(b.entry(n("t:c")).get().is_none());
+        assert!(b.build().unwrap().column::<Hardness>().is_none());
     }
 
     #[test]
-    fn attach_known_name() {
+    fn get_known_name() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
-        assert!(b.attach(&n("t:a"), Hardness(15)).is_ok());
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
+        b.entry(n("t:a")).get().unwrap().with(Hardness(15));
         let r = b.build().unwrap();
         let a = r.id("t:a").unwrap();
         assert_eq!(r.column::<Hardness>().unwrap().get(a).unwrap().0, 15);
@@ -555,8 +594,8 @@ mod tests {
     fn missing_required() {
         let mut b = RegistryBuilder::<Block>::new();
         b.declare::<Model>();
-        b.entry(n("t:a")).unwrap().with(Solid(true));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap().with(Solid(true));
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![
@@ -575,11 +614,11 @@ mod tests {
     #[test]
     fn duplicate_facet() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a"))
+        b.create(n("t:a"))
             .unwrap()
             .with(Solid(true))
             .with(Solid(false));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::DuplicateComponent {
@@ -592,8 +631,8 @@ mod tests {
     #[test]
     fn require_present_is_not_reported() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap().with(Model(1));
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap().with(Model(1));
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::MissingComponent {
@@ -606,8 +645,8 @@ mod tests {
     #[test]
     fn duplicate_does_not_fake_missing() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a")).unwrap().with(Model(1)).with(Model(2));
-        b.entry(n("t:b")).unwrap().with(Model(3));
+        b.create(n("t:a")).unwrap().with(Model(1)).with(Model(2));
+        b.create(n("t:b")).unwrap().with(Model(3));
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::DuplicateComponent {
@@ -620,7 +659,7 @@ mod tests {
     #[test]
     fn triple_attach_reports_two_duplicates() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:a"))
+        b.create(n("t:a"))
             .unwrap()
             .with(Model(1))
             .with(Model(2))
@@ -631,9 +670,9 @@ mod tests {
     #[test]
     fn pin() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().pin(Id::from_raw(0));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap().pin(Id::from_raw(0));
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         assert_eq!(r.id("t:c").unwrap().raw(), 0);
         assert_eq!(r.id("t:a").unwrap().raw(), 1);
@@ -643,9 +682,9 @@ mod tests {
     #[test]
     fn pinned_in_order() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().pin(Id::from_raw(2));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap().pin(Id::from_raw(2));
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         assert_eq!(r.id("t:a").unwrap().raw(), 0);
         assert_eq!(r.id("t:b").unwrap().raw(), 1);
@@ -655,9 +694,9 @@ mod tests {
     #[test]
     fn pinned_in_middle() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().pin(Id::from_raw(1));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap().pin(Id::from_raw(1));
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         let r = b.build().unwrap();
         assert_eq!(r.id("t:a").unwrap().raw(), 0);
         assert_eq!(r.id("t:c").unwrap().raw(), 1);
@@ -667,9 +706,9 @@ mod tests {
     #[test]
     fn pinned_out_of_range() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().pin(Id::from_raw(3));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap().pin(Id::from_raw(3));
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::PinOutOfRange {
@@ -683,9 +722,9 @@ mod tests {
     #[test]
     fn pin_conflict() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c")).unwrap().pin(Id::from_raw(0));
-        b.entry(n("t:a")).unwrap().pin(Id::from_raw(0));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap().pin(Id::from_raw(0));
+        b.create(n("t:a")).unwrap().pin(Id::from_raw(0));
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::PinConflict {
@@ -699,13 +738,13 @@ mod tests {
     #[test]
     fn triple_pinned() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c"))
+        b.create(n("t:c"))
             .unwrap()
             .pin(Id::from_raw(1))
             .pin(Id::from_raw(2))
             .pin(Id::from_raw(9));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![
@@ -726,12 +765,12 @@ mod tests {
     #[test]
     fn double_pinned() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c"))
+        b.create(n("t:c"))
             .unwrap()
             .pin(Id::from_raw(1))
             .pin(Id::from_raw(9));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::DoublePin {
@@ -745,12 +784,12 @@ mod tests {
     #[test]
     fn double_pinned_with_same_id() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c"))
+        b.create(n("t:c"))
             .unwrap()
             .pin(Id::from_raw(1))
             .pin(Id::from_raw(1));
-        b.entry(n("t:a")).unwrap();
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::DoublePin {
@@ -764,15 +803,15 @@ mod tests {
     #[test]
     fn double_pinned_twice() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c"))
+        b.create(n("t:c"))
             .unwrap()
             .pin(Id::from_raw(1))
             .pin(Id::from_raw(9));
-        b.entry(n("t:a"))
+        b.create(n("t:a"))
             .unwrap()
             .pin(Id::from_raw(2))
             .pin(Id::from_raw(8));
-        b.entry(n("t:b")).unwrap();
+        b.create(n("t:b")).unwrap();
         assert_eq!(
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![
@@ -793,15 +832,25 @@ mod tests {
     #[test]
     fn facet_follows_pin() {
         let mut b = RegistryBuilder::<Block>::new();
-        b.entry(n("t:c"))
+        b.create(n("t:c"))
             .unwrap()
             .pin(Id::from_raw(0))
             .with(Hardness(5));
-        b.entry(n("t:a")).unwrap();
+        b.create(n("t:a")).unwrap();
         let r = b.build().unwrap();
         let c = r.id("t:c").unwrap();
         let a = r.id("t:a").unwrap();
         assert_eq!(r.column::<Hardness>().unwrap().get(c).unwrap().0, 5);
         assert_eq!(r.column::<Hardness>().unwrap().get(a), None);
+    }
+
+    #[test]
+    fn or_init_runs_once() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.entry(n("t:a")).or_init(|e| e.with(Hardness(1)));
+        b.entry(n("t:a")).or_init(|e| e.with(Hardness(2)));
+        let r = b.build().unwrap();
+        let a = r.id("t:a").unwrap();
+        assert_eq!(r.column::<Hardness>().unwrap().get(a).unwrap().0, 1);
     }
 }

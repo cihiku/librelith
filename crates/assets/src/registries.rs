@@ -180,11 +180,11 @@ mod tests {
     fn two_kinds_roundtrip() {
         let mut b = Registries::builder();
         b.add_kind::<Block>(n("t:block"), |k| {
-            k.entry(n("t:stone")).unwrap().with(Hardness(5));
+            k.create(n("t:stone")).unwrap().with(Hardness(5));
         })
         .unwrap()
         .add_kind::<Item>(n("t:item"), |k| {
-            k.entry(n("t:stick")).unwrap();
+            k.create(n("t:stick")).unwrap();
         })
         .unwrap();
         let r = b.build().unwrap();
@@ -222,11 +222,11 @@ mod tests {
         let mut b = Registries::builder();
         b.add_kind::<Block>(n("t:block"), |k| {
             k.declare::<Model>();
-            k.entry(n("t:stone")).unwrap();
+            k.create(n("t:stone")).unwrap();
         })
         .unwrap()
         .add_kind::<Item>(n("t:item"), |k| {
-            k.entry(n("t:stick")).unwrap();
+            k.create(n("t:stick")).unwrap();
         })
         .unwrap();
         assert_eq!(
@@ -248,12 +248,12 @@ mod tests {
         let mut b = Registries::builder();
         b.add_kind::<Block>(n("t:block"), |k| {
             k.declare::<Model>();
-            k.entry(n("t:stone")).unwrap();
+            k.create(n("t:stone")).unwrap();
         })
         .unwrap()
         .add_kind::<Item>(n("t:item"), |k| {
             k.declare::<Model>();
-            k.entry(n("t:stick")).unwrap();
+            k.create(n("t:stick")).unwrap();
         })
         .unwrap();
         assert_eq!(b.build().map(|_| ()).unwrap_err().errors.len(), 2)

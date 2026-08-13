@@ -42,11 +42,11 @@
 //!             k.declare::<Hardness>();
 //!             k.declare::<LightSource>();
 //!             k.declare::<Solid>();
-//!             k.entry(n("librelith:stone"))
+//!             k.create(n("librelith:stone"))
 //!                 .unwrap()
 //!                 .with(Hardness(10))
 //!                 .with(Texture(10));
-//!             k.entry(n("librelith:glowstone"))
+//!             k.create(n("librelith:glowstone"))
 //!                 .unwrap()
 //!                 .with(Hardness(20))
 //!                 .with(Texture(10))
@@ -54,7 +54,7 @@
 //!         })
 //!         .unwrap()
 //!         .add_kind::<Item>(n("librelith:item"), |k| {
-//!             k.entry(n("librelith:stick")).unwrap();
+//!             k.create(n("librelith:stick")).unwrap();
 //!         })
 //!         .unwrap();
 //!     builder.build().unwrap()
@@ -102,6 +102,7 @@ pub use registries::RegistriesBuilder;
 pub use registries::RegistriesError;
 pub use registry::BuildError;
 pub use registry::BuildErrorKind;
+pub use registry::Entry;
 pub use registry::EntryRef;
 pub use registry::Registry;
 pub use registry::RegistryBuilder;
