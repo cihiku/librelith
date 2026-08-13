@@ -54,6 +54,13 @@ impl<K, C: Facet> Column<K, C> {
         }
     }
 
+    pub fn as_slice(&self) -> Option<&[C]> {
+        match &self.repr {
+            Repr::Dense(values) => Some(values),
+            Repr::Sparse { .. } => None,
+        }
+    }
+
     pub fn len(&self) -> usize {
         match &self.repr {
             Repr::Dense(values) => values,
