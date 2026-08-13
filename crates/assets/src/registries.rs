@@ -6,11 +6,11 @@ use core::{
 
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 
-use crate::{BuildError, Name, Registry, RegistryBuilder, registry::Data};
+use crate::{BuildError, Name, Registry, RegistryBuilder, RegistryInit, registry::Data};
 
 #[derive(Default)]
 pub struct RegistriesBuilder {
-    kinds: BTreeMap<TypeId, (Data, BuildKind, Name)>,
+    kinds: BTreeMap<TypeId, (Data, BuildKind, FinishKind, Name)>,
     kinds_name: BTreeMap<Name, TypeId>,
 }
 
@@ -71,10 +71,15 @@ impl Display for RegistriesBuildErrorKind {
 impl Error for RegistriesError {}
 
 type BuildKind = fn(Data) -> Result<Data, BuildError>;
+type FinishKind = fn(Data) -> Data;
+
+fn finish_kind<K: 'static>(data: Data) -> Data {
+    Box::from(data.downcast::<RegistryInit<K>>().unwrap().build())
+}
 
 fn build_kind<K: 'static>(data: Data) -> Result<Data, BuildError> {
     let builder: RegistryBuilder<K> = *data.downcast().unwrap();
-    Ok(Box::from(builder.build()?))
+    Ok(Box::from(builder.build_init()?))
 }
 
 pub struct Registries {
@@ -117,7 +122,12 @@ impl RegistriesBuilder {
         f(&mut builder);
         self.kinds.insert(
             TypeId::of::<K>(),
-            (Box::from(builder), build_kind::<K>, name.clone()),
+            (
+                Box::from(builder),
+                build_kind::<K>,
+                finish_kind::<K>,
+                name.clone(),
+            ),
         );
         self.kinds_name.insert(name, TypeId::of::<K>());
         Ok(self)
@@ -127,16 +137,16 @@ impl RegistriesBuilder {
         self.kinds.get_mut(&TypeId::of::<K>())?.0.downcast_mut()
     }
 
-    pub fn build(self) -> Result<Registries, RegistriesBuildError> {
-        let mut registries = BTreeMap::new();
+    pub fn build_init(self) -> Result<RegistriesInit, RegistriesBuildError> {
+        let mut inits = BTreeMap::new();
         let mut err = RegistriesBuildError { errors: Vec::new() };
-        for (type_id, (builder, build_kind, name)) in self.kinds {
+        for (type_id, (builder, build_kind, finish_kind, name)) in self.kinds {
             match build_kind(builder).map_err(|e| RegistriesBuildErrorKind {
                 name: name.clone(),
                 build: e,
             }) {
                 Ok(registry) => {
-                    registries.insert(type_id, (registry, name));
+                    inits.insert(type_id, (registry, finish_kind, name));
                 }
                 Err(e) => {
                     err.errors.push(e);
@@ -144,9 +154,42 @@ impl RegistriesBuilder {
             };
         }
         if err.errors.is_empty() {
-            Ok(Registries { registries })
+            Ok(RegistriesInit { inits })
         } else {
             Err(err)
+        }
+    }
+
+    pub fn build(self) -> Result<Registries, RegistriesBuildError> {
+        Ok(self.build_init()?.build())
+    }
+}
+
+pub struct RegistriesInit {
+    inits: BTreeMap<TypeId, (Data, FinishKind, Name)>,
+}
+
+impl RegistriesInit {
+    pub fn get<K: 'static>(&self) -> Option<&Registry<K>> {
+        Some(
+            self.inits
+                .get(&TypeId::of::<K>())?
+                .0
+                .downcast_ref::<RegistryInit<K>>()?,
+        )
+    }
+
+    pub fn kind_mut<K: 'static>(&mut self) -> Option<&mut RegistryInit<K>> {
+        self.inits.get_mut(&TypeId::of::<K>())?.0.downcast_mut()
+    }
+
+    pub fn build(self) -> Registries {
+        Registries {
+            registries: self
+                .inits
+                .into_iter()
+                .map(|(type_id, (data, finish, name))| (type_id, (finish(data), name)))
+                .collect(),
         }
     }
 }

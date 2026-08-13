@@ -1,7 +1,8 @@
 use core::{
-    any::{Any, TypeId, type_name},
+    any::{type_name, Any, TypeId},
     error::Error,
     marker::PhantomData,
+    ops::Deref,
 };
 
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
@@ -29,6 +30,7 @@ impl BuildError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuildErrorKind {
     MissingComponent {
         entry: Name,
@@ -52,6 +54,14 @@ pub enum BuildErrorKind {
         entry: Name,
         first: u32,
         second: u32,
+    },
+    DuplicateColumn {
+        component: &'static str,
+    },
+    InsertOutOfRange {
+        component: &'static str,
+        id: u32,
+        len: u32,
     },
 }
 
@@ -101,6 +111,15 @@ impl core::fmt::Display for BuildErrorKind {
             } => {
                 write!(f, "{entry} pinned to both {first} and {second} slots")
             }
+            Self::DuplicateColumn { component } => {
+                write!(f, "{component} already exists")
+            }
+            Self::InsertOutOfRange { component, id, len } => {
+                write!(
+                    f,
+                    "{component} value for id {id} but registry has {len} entries"
+                )
+            }
         }
     }
 }
@@ -114,6 +133,85 @@ pub struct RegistryBuilder<K> {
     stages: BTreeMap<TypeId, Stage>,
     pins: Vec<(u32, u32)>,
     _k: PhantomData<fn() -> K>,
+}
+
+pub struct RegistryInit<K> {
+    registry: Registry<K>,
+    perm: Perm<K>,
+}
+
+impl<K> Deref for RegistryInit<K> {
+    type Target = Registry<K>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.registry
+    }
+}
+
+impl<K: 'static> RegistryInit<K> {
+    pub fn perm(&self) -> &Perm<K> {
+        &self.perm
+    }
+
+    pub fn insert_column<C: Facet>(
+        &mut self,
+        values: impl IntoIterator<Item = (Id<K>, C)>,
+    ) -> Result<(), BuildError> {
+        let mut err = BuildError { errors: Vec::new() };
+        if self.registry.columns.contains_key(&TypeId::of::<C>()) {
+            err.errors.push(BuildErrorKind::DuplicateColumn {
+                component: type_name::<C>(),
+            });
+        }
+        let mut pairs = Vec::new();
+        let len = self.registry.names.len() as u32;
+        for (id, value) in values {
+            if id.raw() >= len {
+                err.errors.push(BuildErrorKind::InsertOutOfRange {
+                    component: type_name::<C>(),
+                    id: id.raw(),
+                    len,
+                });
+            } else {
+                pairs.push((id.raw(), value));
+            }
+        }
+        match make_column::<K, C>(pairs, &self.registry.names) {
+            Ok(column) if err.errors.is_empty() => {
+                self.registry.columns.insert(TypeId::of::<C>(), column);
+                Ok(())
+            }
+            Ok(_) => Err(err),
+            Err(mut e) => {
+                err.errors.append(&mut e.errors);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn build(self) -> Registry<K> {
+        self.registry
+    }
+}
+
+pub struct Perm<K> {
+    map: Vec<u32>,
+    _k: PhantomData<fn() -> K>,
+}
+
+impl<K> Perm<K> {
+    pub fn id(&self, provisional: u32) -> Id<K> {
+        Id::from_raw(self.map[provisional as usize])
+    }
+
+    pub fn permute<T>(&self, items: Vec<T>) -> Vec<T> {
+        assert_eq!(items.len(), self.map.len());
+        let mut out: Vec<Option<T>> = (0..items.len()).map(|_| None).collect();
+        for (i, item) in items.into_iter().enumerate() {
+            out[self.map[i] as usize] = Some(item);
+        }
+        out.into_iter().map(Option::unwrap).collect()
+    }
 }
 
 pub(crate) type Data = Box<dyn Any + Send + Sync>;
@@ -187,6 +285,10 @@ impl<'a, K: 'static> EntryRef<'a, K> {
         self.builder.pins.push((self.index, id.raw()));
         self
     }
+
+    pub fn index(&self) -> u32 {
+        self.index
+    }
 }
 
 pub struct Registry<K> {
@@ -208,18 +310,11 @@ impl<K> Default for RegistryBuilder<K> {
     }
 }
 
-fn finish<K: 'static, C: Facet>(
-    data: Data,
-    perm: &[u32],
+fn make_column<K: 'static, C: Facet>(
+    mut pairs: Vec<(u32, C)>,
     names: &[Name],
 ) -> Result<Data, BuildError> {
-    let staged: Vec<(u32, C)> = *data.downcast().unwrap();
-    let mut pairs: Vec<(u32, C)> = staged
-        .into_iter()
-        .map(|(old, value)| (perm[old as usize], value))
-        .collect();
     pairs.sort_by_key(|pair| pair.0);
-
     let mut errors: Vec<BuildErrorKind> = Vec::new();
 
     for pair in pairs.windows(2) {
@@ -265,7 +360,6 @@ fn finish<K: 'static, C: Facet>(
             Column::<K, C>::dense(pairs.into_iter().map(|(_, value)| value).collect())
         }
     };
-
     if !errors.is_empty() {
         Err(BuildError { errors })
     } else {
@@ -273,10 +367,29 @@ fn finish<K: 'static, C: Facet>(
     }
 }
 
+fn finish<K: 'static, C: Facet>(
+    data: Data,
+    perm: &[u32],
+    names: &[Name],
+) -> Result<Data, BuildError> {
+    let staged: Vec<(u32, C)> = *data.downcast().unwrap();
+    let mut pairs: Vec<(u32, C)> = staged
+        .into_iter()
+        .map(|(old, value)| (perm[old as usize], value))
+        .collect();
+    pairs.sort_by_key(|pair| pair.0);
+    make_column::<K, C>(pairs, names)
+}
+
 impl<K: 'static> RegistryBuilder<K> {
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Name)> {
+        self.index.iter().map(|(name, &index)| (index, name))
+    }
+
     pub fn declare<C: Facet>(&mut self) {
         self.stage::<C>();
     }
+
     fn stage<C: Facet>(&mut self) -> &mut Vec<(u32, C)> {
         self.stages
             .entry(TypeId::of::<C>())
@@ -311,7 +424,7 @@ impl<K: 'static> RegistryBuilder<K> {
         }
     }
 
-    pub fn build(self) -> Result<Registry<K>, BuildError> {
+    pub fn build_init(self) -> Result<RegistryInit<K>, BuildError> {
         let mut perm = alloc::vec![0u32; self.next as usize];
         let mut by_entry = BTreeMap::new();
         let mut by_slot = BTreeMap::new();
@@ -374,15 +487,25 @@ impl<K: 'static> RegistryBuilder<K> {
             }
         }
         if err.errors.is_empty() {
-            Ok(Registry {
-                names,
-                columns,
-                sorted,
-                _k: PhantomData,
+            Ok(RegistryInit {
+                registry: Registry {
+                    names,
+                    columns,
+                    sorted,
+                    _k: PhantomData,
+                },
+                perm: Perm {
+                    map: perm,
+                    _k: PhantomData,
+                },
             })
         } else {
             Err(err)
         }
+    }
+
+    pub fn build(self) -> Result<Registry<K>, BuildError> {
+        Ok(self.build_init()?.build())
     }
 }
 
@@ -452,11 +575,13 @@ impl<K> Remap<K> {
 mod tests {
     use core::any::type_name;
 
+    use alloc::vec::Vec;
+
     use crate::{
-        Id,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},
+        Id,
     };
 
     #[derive(Debug)]
@@ -852,5 +977,59 @@ mod tests {
         let r = b.build().unwrap();
         let a = r.id("t:a").unwrap();
         assert_eq!(r.column::<Hardness>().unwrap().get(a).unwrap().0, 1);
+    }
+
+    #[test]
+    fn insert_column_unsorted_input() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap();
+        let mut init = b.build_init().unwrap();
+        let (a, b_, c) = (
+            init.id("t:a").unwrap(),
+            init.id("t:b").unwrap(),
+            init.id("t:c").unwrap(),
+        );
+        init.insert_column([(c, Hardness(3)), (a, Hardness(3)), (b_, Hardness(3))])
+            .unwrap();
+        assert_eq!(
+            init.build()
+                .column::<Hardness>()
+                .unwrap()
+                .get(b_)
+                .unwrap()
+                .0,
+            3
+        );
+    }
+
+    struct Twin(Id<Block>);
+    impl Facet for Twin {}
+
+    #[test]
+    fn twin() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
+        let base: Vec<(u32, Name)> = b.iter().map(|(i, nm)| (i, nm.clone())).collect();
+        let mut twin_of = alloc::vec![];
+        for (i, nm) in base {
+            let t = b
+                .create(alloc::format!("{}_twin", nm.as_str()).parse().unwrap())
+                .unwrap();
+            twin_of.push((i, t.index()));
+        }
+        let mut init = b.build_init().unwrap();
+        let pairs: Vec<(Id<Block>, Twin)> = twin_of
+            .iter()
+            .map(|&(base, twin)| (init.perm().id(base), Twin(init.perm().id(twin))))
+            .collect();
+        init.insert_column(pairs).unwrap();
+        let r = init.build();
+        assert_eq!(
+            r.column::<Twin>().unwrap()[r.id("t:a").unwrap()].0,
+            r.id("t:a_twin").unwrap()
+        )
     }
 }
