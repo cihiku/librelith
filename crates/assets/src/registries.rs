@@ -107,10 +107,10 @@ impl RegistriesBuilder {
         }
     }
 
-    pub fn add_kind<K: 'static>(
+    pub fn insert_kind<K: 'static>(
         &mut self,
         name: Name,
-        f: impl FnOnce(&mut RegistryBuilder<K>),
+        builder: RegistryBuilder<K>,
     ) -> Result<&mut Self, RegistriesError> {
         if self.kinds.contains_key(&TypeId::of::<K>()) {
             return Err(RegistriesError::DuplicateKind(type_name::<K>()));
@@ -118,8 +118,6 @@ impl RegistriesBuilder {
         if self.kinds_name.contains_key(&name) {
             return Err(RegistriesError::DuplicateKindName(name));
         }
-        let mut builder = Registry::builder();
-        f(&mut builder);
         self.kinds.insert(
             TypeId::of::<K>(),
             (
@@ -131,6 +129,16 @@ impl RegistriesBuilder {
         );
         self.kinds_name.insert(name, TypeId::of::<K>());
         Ok(self)
+    }
+
+    pub fn add_kind<K: 'static>(
+        &mut self,
+        name: Name,
+        f: impl FnOnce(&mut RegistryBuilder<K>),
+    ) -> Result<&mut Self, RegistriesError> {
+        let mut builder = Registry::builder();
+        f(&mut builder);
+        self.insert_kind(name, builder)
     }
 
     pub fn kind_mut<K: 'static>(&mut self) -> Option<&mut RegistryBuilder<K>> {

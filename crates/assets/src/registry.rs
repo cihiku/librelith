@@ -1,5 +1,5 @@
 use core::{
-    any::{type_name, Any, TypeId},
+    any::{Any, TypeId, type_name},
     error::Error,
     marker::PhantomData,
     ops::Deref,
@@ -63,6 +63,10 @@ pub enum BuildErrorKind {
         id: u32,
         len: u32,
     },
+    CapExceeded {
+        len: u32,
+        cap: u32,
+    },
 }
 
 impl core::fmt::Display for RegistryError {
@@ -120,6 +124,9 @@ impl core::fmt::Display for BuildErrorKind {
                     "{component} value for id {id} but registry has {len} entries"
                 )
             }
+            Self::CapExceeded { len, cap } => {
+                write!(f, "registry has {len} entries but cap is {cap}")
+            }
         }
     }
 }
@@ -132,6 +139,7 @@ pub struct RegistryBuilder<K> {
     next: u32,
     stages: BTreeMap<TypeId, Stage>,
     pins: Vec<(u32, u32)>,
+    cap: Option<u32>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -305,7 +313,8 @@ impl<K> Default for RegistryBuilder<K> {
             stages: Default::default(),
             next: Default::default(),
             pins: Default::default(),
-            _k: PhantomData,
+            cap: Default::default(),
+            _k: Default::default(),
         }
     }
 }
@@ -408,6 +417,11 @@ impl<K: 'static> RegistryBuilder<K> {
         }
     }
 
+    pub fn with_cap(mut self, cap: u32) -> Self {
+        self.cap = Some(cap);
+        self
+    }
+
     pub fn create(&mut self, name: Name) -> Result<EntryRef<'_, K>, RegistryError> {
         self.entry(name).create()
     }
@@ -437,6 +451,14 @@ impl<K: 'static> RegistryBuilder<K> {
         }
         let mut sorted = Vec::with_capacity(self.next as usize);
         let name_of = |i: u32| by_old[i as usize].unwrap().clone();
+        if let Some(cap) = self.cap
+            && cap < self.next
+        {
+            err.errors.push(BuildErrorKind::CapExceeded {
+                len: self.next,
+                cap,
+            });
+        }
         for (i, slot) in self.pins {
             if let Some(&first) = by_entry.get(&i) {
                 err.errors.push(BuildErrorKind::DoublePin {
@@ -592,10 +614,10 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::{
+        Id,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},
-        Id,
     };
 
     #[derive(Debug)]
@@ -1044,6 +1066,25 @@ mod tests {
         assert_eq!(
             r.column::<Twin>().unwrap()[r.id("t:a").unwrap()].0,
             r.id("t:a_twin").unwrap()
+        )
+    }
+
+    #[test]
+    fn cap() {
+        let mut b = RegistryBuilder::<Block>::new().with_cap(2);
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
+        b.build().unwrap();
+    }
+
+    #[test]
+    fn cap_too_much() {
+        let mut b = RegistryBuilder::<Block>::new().with_cap(1);
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::CapExceeded { len: 2, cap: 1 }]
         )
     }
 }
