@@ -6,6 +6,7 @@
   pkg-config,
   clang,
   formatter,
+  cocogitto,
 }:
 mkShell {
   packages = [
@@ -15,5 +16,6 @@ mkShell {
     tombi
     just
     formatter
+    cocogitto
   ];
 }
