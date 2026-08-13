@@ -510,6 +510,20 @@ impl<K: 'static> RegistryBuilder<K> {
 }
 
 impl<K: 'static> Registry<K> {
+    pub fn range<'r>(
+        &'r self,
+        prefix: &str,
+    ) -> impl Iterator<Item = (Id<K>, &'r Name)> + use<'r, K> {
+        let start = self
+            .sorted
+            .partition_point(|&i| self.names[i as usize].as_str() < prefix);
+        let len = self.sorted[start..]
+            .partition_point(|&i| self.names[i as usize].as_str().starts_with(prefix));
+        self.sorted[start..start + len]
+            .iter()
+            .map(|&i| (Id::from_raw(i), &self.names[i as usize]))
+    }
+
     pub fn builder() -> RegistryBuilder<K> {
         RegistryBuilder::new()
     }
