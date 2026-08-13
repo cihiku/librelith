@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct Name {
     text: Arc<str>,
     colon: usize,
@@ -56,6 +56,44 @@ impl Name {
 
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         self.path().split('/')
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Eq for Name {}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.text.cmp(&other.text)
+    }
+}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl core::hash::Hash for Name {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+    }
+}
+
+impl core::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        &self.text
     }
 }
 

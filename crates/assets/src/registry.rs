@@ -278,9 +278,9 @@ impl<K: 'static> Registry<K> {
         self.names.is_empty()
     }
 
-    pub fn id(&self, name: &Name) -> Option<Id<K>> {
+    pub fn id(&self, name: impl AsRef<str>) -> Option<Id<K>> {
         self.names
-            .binary_search(name)
+            .binary_search_by(|n| n.as_str().cmp(name.as_ref()))
             .ok()
             .map(|i| Id::from_raw(i as u32))
     }
