@@ -1,5 +1,5 @@
 use core::{
-    any::{Any, TypeId, type_name},
+    any::{type_name, Any, TypeId},
     error::Error,
     marker::PhantomData,
 };
@@ -53,7 +53,7 @@ impl core::fmt::Display for RegistryError {
 impl core::fmt::Display for BuildError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let n = self.errors.len();
-        write!(f, "{} build errors: ", if n == 1 { "" } else { "s" })?;
+        write!(f, "{} build error{}:", n, if n == 1 { "" } else { "s" })?;
         for (i, error) in self.errors.iter().enumerate() {
             f.write_str(if i == 0 { " " } else { "; " })?;
             write!(f, "{error}")?
@@ -330,10 +330,10 @@ mod tests {
     use core::any::type_name;
 
     use crate::{
-        Id,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},
+        Id,
     };
 
     #[derive(Debug)]
