@@ -52,9 +52,11 @@ impl core::fmt::Display for RegistryError {
 
 impl core::fmt::Display for BuildError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} build errors: ", self.errors.len())?;
+        let n = self.errors.len();
+        write!(f, "{} build errors: ", if n == 1 { "" } else { "s" })?;
         for (i, error) in self.errors.iter().enumerate() {
-            write!(f, "{i}. {error}: ")?
+            f.write_str(if i == 0 { " " } else { "; " })?;
+            write!(f, "{error}")?
         }
         Ok(())
     }
