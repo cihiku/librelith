@@ -1,9 +1,9 @@
 //! Data model for game content.
 //!
 //! `Id<K>` (`u32`) and `Name` (`"namespace:path"`) are handles to game content.
-//! `Name` is stable across sessions. Its role to be used in files, network and packs.
+//! `Name` is stable across sessions. Its role is to be used in files, network and packs.
 //! `Id<K>` is hot runtime handle. Pinned ids are stable across builds. All others are
-//! valid only for the `Registry<K>` that produced it.
+//! valid only for the `Registry<K>` that produced them.
 //!
 //! `Registry<K>` maps between the two. Ids are assigned deterministically from the sorted name set
 //! and the declared pins.

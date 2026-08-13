@@ -189,10 +189,10 @@ mod tests {
         .unwrap();
         let r = b.build().unwrap();
         let blocks = r.get::<Block>().unwrap();
-        let stone = blocks.id(&n("t:stone")).unwrap();
+        let stone = blocks.id("t:stone").unwrap();
         assert_eq!(blocks.column::<Hardness>().unwrap()[stone].0, 5);
         assert_eq!(r.get::<Item>().unwrap().len(), 1);
-        assert_eq!(r.kind_name::<Block>().unwrap(), &n("t:block"));
+        assert_eq!(r.kind_name::<Block>().unwrap().as_str(), "t:block");
         assert!(r.get::<Fluid>().is_none());
         assert_eq!(r.kind_name::<Fluid>(), None);
     }

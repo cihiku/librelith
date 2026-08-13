@@ -447,9 +447,9 @@ mod tests {
         b.entry(n("t:a")).unwrap();
         b.entry(n("t:b")).unwrap();
         let r = b.build().unwrap();
-        assert_eq!(r.id(&n("t:a")).unwrap().raw(), 0);
-        assert_eq!(r.id(&n("t:b")).unwrap().raw(), 1);
-        assert_eq!(r.id(&n("t:c")).unwrap().raw(), 2);
+        assert_eq!(r.id("t:a").unwrap().raw(), 0);
+        assert_eq!(r.id("t:b").unwrap().raw(), 1);
+        assert_eq!(r.id("t:c").unwrap().raw(), 2);
     }
 
     #[test]
@@ -469,8 +469,8 @@ mod tests {
         b.entry(n("t:a")).unwrap();
         let r = b.build().unwrap();
         let col = r.column::<Hardness>().unwrap();
-        let c = r.id(&n("t:c")).unwrap();
-        let a = r.id(&n("t:a")).unwrap();
+        let c = r.id("t:c").unwrap();
+        let a = r.id("t:a").unwrap();
         assert_eq!(col.get(c), Some(&Hardness(5)));
         assert_eq!(col.get(a), None);
     }
@@ -482,8 +482,8 @@ mod tests {
         b.entry(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let col = r.column::<Solid>().unwrap();
-        assert_eq!(col[r.id(&n("t:a")).unwrap()], Solid(true));
-        assert_eq!(col[r.id(&n("t:b")).unwrap()], Solid(false));
+        assert_eq!(col[r.id("t:a").unwrap()], Solid(true));
+        assert_eq!(col[r.id("t:b").unwrap()], Solid(false));
     }
 
     #[test]
@@ -493,7 +493,7 @@ mod tests {
         b.entry(n("t:b")).unwrap();
         let r = b.build().unwrap();
         let remap = r.remap([n("t:b"), n("t:x"), n("t:a")].iter());
-        assert_eq!(remap.slots, [r.id(&n("t:b")), None, r.id(&n("t:a"))]);
+        assert_eq!(remap.slots, [r.id("t:b"), None, r.id("t:a")]);
         assert_eq!(remap.missing, [(1, n("t:x"))]);
     }
 
@@ -524,7 +524,7 @@ mod tests {
         b.entry(n("t:a")).unwrap().with(Solid(true));
         b.entry(n("t:b")).unwrap();
         let r = b.build().unwrap();
-        let c = r.id(&n("t:c"));
+        let c = r.id("t:c");
         assert!(c.is_none())
     }
 
@@ -547,7 +547,7 @@ mod tests {
         b.entry(n("t:b")).unwrap();
         assert!(b.attach(&n("t:a"), Hardness(15)).is_ok());
         let r = b.build().unwrap();
-        let a = r.id(&n("t:a")).unwrap();
+        let a = r.id("t:a").unwrap();
         assert_eq!(r.column::<Hardness>().unwrap().get(a).unwrap().0, 15);
     }
 
