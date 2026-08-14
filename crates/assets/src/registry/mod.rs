@@ -155,3 +155,26 @@ impl<K, S> Remap<K, S> {
         self.missing.is_empty()
     }
 }
+
+pub trait AnyRegistry<S> {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn stable_ids(&self) -> &[S];
+    fn total_states(&self) -> u32;
+}
+
+impl<K: 'static, S: StableId> AnyRegistry<S> for Registry<K, S> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn stable_ids(&self) -> &[S] {
+        self.stable_ids()
+    }
+
+    fn total_states(&self) -> u32 {
+        self.total_states()
+    }
+}

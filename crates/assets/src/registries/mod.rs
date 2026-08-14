@@ -10,10 +10,14 @@ use core::any::TypeId;
 
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::{Name, Registry, StableId, registry::Data};
+use crate::{
+    Name, Registry, StableId,
+    registry::{AnyRegistry, Data},
+};
 
 pub struct Registries<S = Name> {
-    registries: BTreeMap<TypeId, (Data, S)>,
+    registries: BTreeMap<TypeId, (Data, Cast<S>, S)>,
+    kinds_stable_id: BTreeMap<S, TypeId>,
 }
 
 impl<S: StableId> Registries<S> {
@@ -26,6 +30,13 @@ impl<S: StableId> Registries<S> {
     }
 
     pub fn kind_stable_id<K: 'static>(&self) -> Option<&S> {
-        Some(&self.registries.get(&TypeId::of::<K>())?.1)
+        Some(&self.registries.get(&TypeId::of::<K>())?.2)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&S, &dyn AnyRegistry<S>)> {
+        self.kinds_stable_id.iter().map(|(s, t)| {
+            let (data, cast, _) = &self.registries[t];
+            (s, cast(data))
+        })
     }
 }

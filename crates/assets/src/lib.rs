@@ -104,6 +104,7 @@ pub use registries::RegistriesBuildErrorKind;
 pub use registries::RegistriesBuilder;
 pub use registries::RegistriesError;
 pub use registries::RegistriesInit;
+pub use registry::AnyRegistry;
 pub use registry::BuildError;
 pub use registry::BuildErrorKind;
 pub use registry::Entry;
