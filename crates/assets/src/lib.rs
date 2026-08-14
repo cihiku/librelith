@@ -89,11 +89,13 @@ pub mod id;
 pub mod name;
 pub mod registries;
 pub mod registry;
+pub mod state;
 
 pub use facet::Column;
 pub use facet::Facet;
 pub use facet::Storage;
 pub use id::Id;
+pub use id::StateId;
 pub use name::Name;
 pub use registries::Registries;
 pub use registries::RegistriesBuildError;
@@ -111,3 +113,4 @@ pub use registry::RegistryBuilder;
 pub use registry::RegistryError;
 pub use registry::RegistryInit;
 pub use registry::Remap;
+pub use state::Property;

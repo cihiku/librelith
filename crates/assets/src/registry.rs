@@ -8,6 +8,7 @@ use core::{
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
+    Property, StateId,
     facet::{Column, Facet, Storage},
     id::Id,
     name::Name,
@@ -66,6 +67,16 @@ pub enum BuildErrorKind {
     CapExceeded {
         len: u32,
         cap: u32,
+    },
+    DuplicateProperty {
+        entry: Name,
+        property: &'static str,
+    },
+    TooManyStates {
+        entry: Name,
+    },
+    TooManyStatesTotal {
+        entry: Name,
     },
 }
 
@@ -127,6 +138,15 @@ impl core::fmt::Display for BuildErrorKind {
             Self::CapExceeded { len, cap } => {
                 write!(f, "registry has {len} entries but cap is {cap}")
             }
+            Self::DuplicateProperty { entry, property } => {
+                write!(f, "{entry} has duplicate property {property}")
+            }
+            Self::TooManyStates { entry } => {
+                write!(f, "{entry} state count overflows u32")
+            }
+            Self::TooManyStatesTotal { entry } => {
+                write!(f, "total state count overflows u32 at {entry}")
+            }
         }
     }
 }
@@ -139,6 +159,7 @@ pub struct RegistryBuilder<K> {
     next: u32,
     stages: BTreeMap<TypeId, Stage>,
     pins: Vec<(u32, u32)>,
+    properties: Vec<(u32, PropertyDeclaration)>,
     cap: Option<u32>,
     _k: PhantomData<fn() -> K>,
 }
@@ -200,6 +221,18 @@ impl<K: 'static> RegistryInit<K> {
     pub fn build(self) -> Registry<K> {
         self.registry
     }
+}
+
+struct PropertySlot {
+    id: TypeId,
+    count: u32,
+    stride: u32,
+}
+
+struct PropertyDeclaration {
+    id: TypeId,
+    count: u32,
+    name: &'static str,
 }
 
 pub struct Perm<K> {
@@ -284,6 +317,19 @@ impl<'a, K: 'static> Entry<'a, K> {
 }
 
 impl<'a, K: 'static> EntryRef<'a, K> {
+    pub fn property<P: Property>(self) -> Self {
+        const { assert!(P::COUNT > 0, "Property::COUNT must be nonzero") };
+        self.builder.properties.push((
+            self.index,
+            PropertyDeclaration {
+                id: TypeId::of::<P>(),
+                count: P::COUNT,
+                name: type_name::<P>(),
+            },
+        ));
+        self
+    }
+
     pub fn with<C: Facet>(self, value: C) -> Self {
         self.builder.stage::<C>().push((self.index, value));
         self
@@ -303,6 +349,8 @@ pub struct Registry<K> {
     names: Vec<Name>,
     columns: BTreeMap<TypeId, Data>,
     sorted: Vec<u32>,
+    bases: Vec<u32>,
+    slots: Vec<Vec<PropertySlot>>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -313,6 +361,7 @@ impl<K> Default for RegistryBuilder<K> {
             stages: Default::default(),
             next: Default::default(),
             pins: Default::default(),
+            properties: Default::default(),
             cap: Default::default(),
             _k: Default::default(),
         }
@@ -508,12 +557,70 @@ impl<K: 'static> RegistryBuilder<K> {
                 }
             }
         }
+        let n = self.next as usize;
+        let mut decls: Vec<Vec<PropertyDeclaration>> = (0..n).map(|_| Vec::new()).collect();
+        for (i, decl) in self.properties {
+            let list = &mut decls[i as usize];
+            if list.iter().any(|d| d.id == decl.id) {
+                err.errors.push(BuildErrorKind::DuplicateProperty {
+                    entry: name_of(i),
+                    property: decl.name,
+                });
+            } else {
+                list.push(decl);
+            }
+        }
+        let mut slots: Vec<Vec<PropertySlot>> = (0..n).map(|_| Vec::new()).collect();
+        let mut counts = alloc::vec![1u32; n];
+        for old in 0..n {
+            let mut stride: u32 = 1;
+            let mut sl = Vec::with_capacity(decls[old].len());
+            let mut overflow = false;
+            for d in decls[old].iter().rev() {
+                sl.push(PropertySlot {
+                    id: d.id,
+                    count: d.count,
+                    stride,
+                });
+                match stride.checked_mul(d.count) {
+                    Some(s) => stride = s,
+                    None => {
+                        overflow = true;
+                        break;
+                    }
+                }
+            }
+            if overflow {
+                err.errors.push(BuildErrorKind::TooManyStates {
+                    entry: name_of(old as u32),
+                });
+                continue;
+            }
+            sl.reverse();
+            let id = perm[old] as usize;
+            slots[id] = sl;
+            counts[id] = stride;
+        }
+        let mut bases = Vec::with_capacity(n + 1);
+        let mut acc: u32 = 0;
+        bases.push(0);
+        for id in 0..n {
+            match acc.checked_add(counts[id]) {
+                Some(a) => acc = a,
+                None => err.errors.push(BuildErrorKind::TooManyStatesTotal {
+                    entry: names[id].clone(),
+                }),
+            }
+            bases.push(acc);
+        }
         if err.errors.is_empty() {
             Ok(RegistryInit {
                 registry: Registry {
                     names,
                     columns,
                     sorted,
+                    bases,
+                    slots,
                     _k: PhantomData,
                 },
                 perm: Perm {
@@ -532,6 +639,49 @@ impl<K: 'static> RegistryBuilder<K> {
 }
 
 impl<K: 'static> Registry<K> {
+    pub fn total_states(&self) -> u32 {
+        *self.bases.last().unwrap()
+    }
+
+    pub fn default_state(&self, id: Id<K>) -> StateId<K> {
+        StateId::from_raw(self.bases[id.index()])
+    }
+
+    pub fn state_count(&self, id: Id<K>) -> u32 {
+        self.bases[id.index() + 1] - self.bases[id.index()]
+    }
+
+    pub fn entry_of(&self, state_id: StateId<K>) -> Id<K> {
+        debug_assert!(state_id.raw() < self.total_states());
+        Id::from_raw((self.bases.partition_point(|&b| b <= state_id.raw()) - 1) as u32)
+    }
+
+    fn slot<P: Property>(&self, id: usize) -> Option<&PropertySlot> {
+        self.slots[id].iter().find(|sl| sl.id == TypeId::of::<P>())
+    }
+
+    pub fn property<P: Property>(&self, state_id: StateId<K>) -> Option<P> {
+        debug_assert!(state_id.raw() < self.total_states());
+        let entry = self.entry_of(state_id);
+        let slot = self.slot::<P>(entry.index())?;
+        let local = state_id.raw() - self.bases[entry.index()];
+        let old = (local / slot.stride) % slot.count;
+        Some(P::from_raw(old))
+    }
+
+    pub fn set<P: Property>(&self, state_id: StateId<K>, value: P) -> Option<StateId<K>> {
+        debug_assert!(state_id.raw() < self.total_states());
+        let entry = self.entry_of(state_id);
+        let slot = self.slot::<P>(entry.index())?;
+        let local = state_id.raw() - self.bases[entry.index()];
+        let old = (local / slot.stride) % slot.count;
+        let new = value.to_raw();
+        debug_assert!(new < slot.count);
+        Some(StateId::from_raw(
+            state_id.raw() - old * slot.stride + new * slot.stride,
+        ))
+    }
+
     pub fn range<'r>(
         &'r self,
         prefix: &str,
@@ -614,7 +764,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::{
-        Id,
+        Id, Property, StateId,
         facet::{Facet, Storage},
         name::Name,
         registry::{BuildErrorKind, RegistryBuilder, RegistryError},
@@ -637,6 +787,51 @@ mod tests {
     struct Solid(bool);
     impl Facet for Solid {
         const STORAGE: Storage<Self> = Storage::Dense(|| Solid(false));
+    }
+
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    enum Facing {
+        North,
+        East,
+        South,
+        West,
+    }
+    impl Property for Facing {
+        const COUNT: u32 = 4;
+        fn to_raw(self) -> u32 {
+            self as u32
+        }
+        fn from_raw(raw: u32) -> Self {
+            match raw {
+                0 => Self::North,
+                1 => Self::East,
+                2 => Self::South,
+                _ => Self::West,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    struct Lit(bool);
+    impl Property for Lit {
+        const COUNT: u32 = 2;
+        fn to_raw(self) -> u32 {
+            u32::from(self.0)
+        }
+        fn from_raw(raw: u32) -> Self {
+            Self(raw == 1)
+        }
+    }
+
+    struct Huge(u32); // for overflow tests
+    impl Property for Huge {
+        const COUNT: u32 = u32::MAX;
+        fn to_raw(self) -> u32 {
+            self.0
+        }
+        fn from_raw(raw: u32) -> Self {
+            Self(raw)
+        }
     }
 
     fn n(s: &str) -> Name {
@@ -1086,5 +1281,175 @@ mod tests {
             b.build().map(|_| ()).unwrap_err().errors,
             alloc::vec![BuildErrorKind::CapExceeded { len: 2, cap: 1 }]
         )
+    }
+
+    #[test]
+    fn no_props_states_are_ids() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:b")).unwrap();
+        b.create(n("t:c")).unwrap();
+        let r = b.build().unwrap();
+        assert_eq!(r.total_states(), 3);
+        for (id, _) in r.iter() {
+            assert_eq!(r.default_state(id).raw(), id.raw());
+            assert_eq!(r.state_count(id), 1);
+            assert_eq!(r.entry_of(r.default_state(id)), id);
+        }
+    }
+
+    #[test]
+    fn air_keeps_state_zero() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:air")).unwrap().pin(Id::from_raw(0));
+        b.create(n("t:aa")).unwrap().property::<Facing>();
+        let r = b.build().unwrap();
+        let air = r.id("t:air").unwrap();
+        assert_eq!(air.raw(), 0);
+        assert_eq!(r.default_state(air).raw(), 0);
+        assert_eq!(r.default_state(r.id("t:aa").unwrap()).raw(), 1);
+        assert_eq!(r.total_states(), 5);
+    }
+
+    #[test]
+    fn mixed_radix_roundtrip() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:furnace"))
+            .unwrap()
+            .property::<Facing>()
+            .property::<Lit>();
+        let r = b.build().unwrap();
+        let id = r.id("t:furnace").unwrap();
+        assert_eq!(r.state_count(id), 8);
+        for f in [Facing::North, Facing::East, Facing::South, Facing::West] {
+            for lit in [false, true] {
+                let s = r
+                    .set(r.set(r.default_state(id), f).unwrap(), Lit(lit))
+                    .unwrap();
+                assert_eq!(r.property::<Facing>(s), Some(f));
+                assert_eq!(r.property::<Lit>(s), Some(Lit(lit)));
+                assert_eq!(r.entry_of(s), id);
+            }
+        }
+    }
+
+    #[test]
+    fn stride_is_declaration_order() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a"))
+            .unwrap()
+            .property::<Facing>()
+            .property::<Lit>();
+        let r = b.build().unwrap();
+        let id = r.id("t:a").unwrap();
+        let s = r.set(r.default_state(id), Facing::East).unwrap();
+        let s = r.set(s, Lit(true)).unwrap();
+        assert_eq!(s.raw(), 3);
+    }
+
+    #[test]
+    fn entry_of_boundaries() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap().property::<Facing>();
+        b.create(n("t:b")).unwrap().property::<Lit>();
+        let r = b.build().unwrap();
+        let a = r.id("t:a").unwrap();
+        let b_ = r.id("t:b").unwrap();
+        assert_eq!(r.entry_of(StateId::from_raw(0)), a);
+        assert_eq!(r.entry_of(StateId::from_raw(3)), a);
+        assert_eq!(r.entry_of(StateId::from_raw(4)), b_);
+        assert_eq!(r.entry_of(StateId::from_raw(5)), b_);
+    }
+
+    #[test]
+    fn property_gating() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap().property::<Facing>();
+        let r = b.build().unwrap();
+        let s = r.default_state(r.id("t:a").unwrap());
+        assert_eq!(r.property::<Lit>(s), None);
+        assert!(r.set(s, Lit(true)).is_none());
+        assert_eq!(r.property::<Facing>(s), Some(Facing::North));
+    }
+
+    #[test]
+    fn pinned_propful_entry() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:b")).unwrap().property::<Lit>();
+        b.create(n("t:a")).unwrap();
+        b.create(n("t:z"))
+            .unwrap()
+            .pin(Id::from_raw(0))
+            .property::<Facing>();
+        let r = b.build().unwrap();
+        assert_eq!(r.default_state(r.id("t:z").unwrap()).raw(), 0);
+        assert_eq!(r.default_state(r.id("t:a").unwrap()).raw(), 4);
+        assert_eq!(r.default_state(r.id("t:b").unwrap()).raw(), 5);
+        assert_eq!(r.total_states(), 7);
+    }
+
+    #[test]
+    fn minting_order_does_not_matter() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:c")).unwrap().property::<Lit>();
+        b.create(n("t:a")).unwrap().property::<Facing>();
+        let r = b.build().unwrap();
+        assert_eq!(r.state_count(r.id("t:a").unwrap()), 4);
+        assert_eq!(r.default_state(r.id("t:c").unwrap()).raw(), 4);
+        let s = r
+            .set(r.default_state(r.id("t:c").unwrap()), Lit(true))
+            .unwrap();
+        assert_eq!(s.raw(), 5);
+    }
+
+    #[test]
+    fn duplicate_property() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a"))
+            .unwrap()
+            .property::<Facing>()
+            .property::<Facing>();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::DuplicateProperty {
+                entry: n("t:a"),
+                property: type_name::<Facing>()
+            }]
+        );
+    }
+
+    #[test]
+    fn state_count_overflow() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a"))
+            .unwrap()
+            .property::<Huge>()
+            .property::<Lit>();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::TooManyStates { entry: n("t:a") }]
+        );
+    }
+
+    #[test]
+    fn total_states_overflow() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.create(n("t:a")).unwrap().property::<Huge>();
+        b.create(n("t:b")).unwrap().property::<Huge>();
+        assert_eq!(
+            b.build().map(|_| ()).unwrap_err().errors,
+            alloc::vec![BuildErrorKind::TooManyStatesTotal { entry: n("t:b") }]
+        );
+    }
+
+    #[test]
+    fn property_errors_accumulate() {
+        let mut b = RegistryBuilder::<Block>::new();
+        b.declare::<Model>();
+        b.create(n("t:a"))
+            .unwrap()
+            .property::<Facing>()
+            .property::<Facing>();
+        assert_eq!(b.build().map(|_| ()).unwrap_err().errors.len(), 2);
     }
 }
