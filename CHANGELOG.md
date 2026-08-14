@@ -1,6 +1,12 @@
 # Changelog
 
 - - -
+## [v0.4.0](https://github.com/cihiku/librelith/compare/feb21afbb8c83d16cd0cbfd49e8264b00c4a2ac7..v0.4.0) - 2026-08-14
+#### Features
+- kind enumeration on Registries - ([feb21af](https://github.com/cihiku/librelith/commit/feb21afbb8c83d16cd0cbfd49e8264b00c4a2ac7)) - cihiku
+
+- - -
+
 ## [v0.3.1](https://github.com/cihiku/librelith/compare/8f0307a22b38671b739110ee51f6776aa11ba4c5..v0.3.1) - 2026-08-14
 #### Features
 - default generics for StableId - ([217506c](https://github.com/cihiku/librelith/commit/217506cc8d94719c0ab8e50c4ec93ea38562cffc)) - cihiku
