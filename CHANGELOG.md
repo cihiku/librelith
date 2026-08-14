@@ -1,6 +1,13 @@
 # Changelog
 
 - - -
+## [v0.3.1](https://github.com/cihiku/librelith/compare/8f0307a22b38671b739110ee51f6776aa11ba4c5..v0.3.1) - 2026-08-14
+#### Features
+- default generics for StableId - ([217506c](https://github.com/cihiku/librelith/commit/217506cc8d94719c0ab8e50c4ec93ea38562cffc)) - cihiku
+- range() is back - ([8f0307a](https://github.com/cihiku/librelith/commit/8f0307a22b38671b739110ee51f6776aa11ba4c5)) - cihiku
+
+- - -
+
 ## [v0.3.0](https://github.com/cihiku/librelith/compare/16a395c68b09ffbd9be701e2b1a240742c976d43..v0.3.0) - 2026-08-14
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) registry generic over stable identity - ([d4c8211](https://github.com/cihiku/librelith/commit/d4c821182dc4294f2d3a287c2d4da331f6d6f2ae)) - cihiku
