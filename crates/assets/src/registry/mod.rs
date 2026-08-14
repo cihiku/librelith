@@ -129,6 +129,22 @@ impl<K: 'static, S: StableId> Registry<K, S> {
     }
 }
 
+impl<K: 'static, S: StableId + Borrow<str>> Registry<K, S> {
+    pub fn range<'r>(
+        &'r self,
+        prefix: &str,
+    ) -> impl Iterator<Item = (Id<K>, &'r S)> + use<'r, K, S> {
+        let start = self
+            .sorted
+            .partition_point(|&i| self.stable_ids[i as usize].borrow() < prefix);
+        let len = self.sorted[start..]
+            .partition_point(|&i| self.stable_ids[i as usize].borrow().starts_with(prefix));
+        self.sorted[start..start + len]
+            .iter()
+            .map(|&i| (Id::from_raw(i), &self.stable_ids[i as usize]))
+    }
+}
+
 pub struct Remap<K, S> {
     pub slots: Vec<Option<Id<K>>>,
     pub missing: Vec<(usize, S)>,
