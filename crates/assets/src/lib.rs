@@ -95,6 +95,7 @@ pub use facet::Column;
 pub use facet::Facet;
 pub use facet::Storage;
 pub use id::Id;
+pub use id::StableId;
 pub use id::StateId;
 pub use name::Name;
 pub use registries::Registries;

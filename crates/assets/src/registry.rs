@@ -1,5 +1,6 @@
 use core::{
     any::{Any, TypeId, type_name},
+    borrow::Borrow,
     error::Error,
     marker::PhantomData,
     ops::Deref,
@@ -8,51 +9,50 @@ use core::{
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 
 use crate::{
-    Property, StateId,
+    Name, Property, StableId, StateId,
     facet::{Column, Facet, Storage},
     id::Id,
-    name::Name,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegistryError {
-    DuplicateName(Name),
+pub enum RegistryError<S> {
+    DuplicateStableId(S),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildError {
-    pub(crate) errors: Vec<BuildErrorKind>,
+pub struct BuildError<S> {
+    pub(crate) errors: Vec<BuildErrorKind<S>>,
 }
 
-impl BuildError {
-    pub fn errors(&self) -> &[BuildErrorKind] {
+impl<S> BuildError<S> {
+    pub fn errors(&self) -> &[BuildErrorKind<S>] {
         &self.errors
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum BuildErrorKind {
+pub enum BuildErrorKind<S> {
     MissingComponent {
-        entry: Name,
+        entry: S,
         component: &'static str,
     },
     DuplicateComponent {
-        entry: Name,
+        entry: S,
         component: &'static str,
     },
     PinOutOfRange {
-        entry: Name,
+        entry: S,
         slot: u32,
         len: u32,
     },
     PinConflict {
-        first: Name,
-        second: Name,
+        first: S,
+        second: S,
         slot: u32,
     },
     DoublePin {
-        entry: Name,
+        entry: S,
         first: u32,
         second: u32,
     },
@@ -69,26 +69,26 @@ pub enum BuildErrorKind {
         cap: u32,
     },
     DuplicateProperty {
-        entry: Name,
+        entry: S,
         property: &'static str,
     },
     TooManyStates {
-        entry: Name,
+        entry: S,
     },
     TooManyStatesTotal {
-        entry: Name,
+        entry: S,
     },
 }
 
-impl core::fmt::Display for RegistryError {
+impl<S: core::fmt::Display> core::fmt::Display for RegistryError<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::DuplicateName(name) => write!(f, "{name} already in registry"),
+            Self::DuplicateStableId(stable_id) => write!(f, "{stable_id} already in registry"),
         }
     }
 }
 
-impl core::fmt::Display for BuildError {
+impl<S: core::fmt::Display> core::fmt::Display for BuildError<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let n = self.errors.len();
         write!(f, "{} build error{}:", n, if n == 1 { "" } else { "s" })?;
@@ -100,7 +100,7 @@ impl core::fmt::Display for BuildError {
     }
 }
 
-impl core::fmt::Display for BuildErrorKind {
+impl<S: core::fmt::Display> core::fmt::Display for BuildErrorKind<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MissingComponent { entry, component } => {
@@ -151,33 +151,33 @@ impl core::fmt::Display for BuildErrorKind {
     }
 }
 
-impl Error for RegistryError {}
-impl Error for BuildError {}
+impl<S: core::fmt::Debug + core::fmt::Display> Error for RegistryError<S> {}
+impl<S: core::fmt::Debug + core::fmt::Display> Error for BuildError<S> {}
 
-pub struct RegistryBuilder<K> {
-    index: BTreeMap<Name, u32>,
+pub struct RegistryBuilder<K, S = Name> {
+    index: BTreeMap<S, u32>,
     next: u32,
-    stages: BTreeMap<TypeId, Stage>,
+    stages: BTreeMap<TypeId, Stage<S>>,
     pins: Vec<(u32, u32)>,
     properties: Vec<(u32, PropertyDeclaration)>,
     cap: Option<u32>,
     _k: PhantomData<fn() -> K>,
 }
 
-pub struct RegistryInit<K> {
-    registry: Registry<K>,
+pub struct RegistryInit<K, S> {
+    registry: Registry<K, S>,
     perm: Perm<K>,
 }
 
-impl<K> Deref for RegistryInit<K> {
-    type Target = Registry<K>;
+impl<K, S> Deref for RegistryInit<K, S> {
+    type Target = Registry<K, S>;
 
     fn deref(&self) -> &Self::Target {
         &self.registry
     }
 }
 
-impl<K: 'static> RegistryInit<K> {
+impl<K: 'static, S: StableId> RegistryInit<K, S> {
     pub fn perm(&self) -> &Perm<K> {
         &self.perm
     }
@@ -185,7 +185,7 @@ impl<K: 'static> RegistryInit<K> {
     pub fn insert_column<C: Facet>(
         &mut self,
         values: impl IntoIterator<Item = (Id<K>, C)>,
-    ) -> Result<(), BuildError> {
+    ) -> Result<(), BuildError<S>> {
         let mut err = BuildError { errors: Vec::new() };
         if self.registry.columns.contains_key(&TypeId::of::<C>()) {
             err.errors.push(BuildErrorKind::DuplicateColumn {
@@ -193,7 +193,7 @@ impl<K: 'static> RegistryInit<K> {
             });
         }
         let mut pairs = Vec::new();
-        let len = self.registry.names.len() as u32;
+        let len = self.registry.stable_ids.len() as u32;
         for (id, value) in values {
             if id.raw() >= len {
                 err.errors.push(BuildErrorKind::InsertOutOfRange {
@@ -205,7 +205,7 @@ impl<K: 'static> RegistryInit<K> {
                 pairs.push((id.raw(), value));
             }
         }
-        match make_column::<K, C>(pairs, &self.registry.names) {
+        match make_column::<K, C, S>(pairs, &self.registry.stable_ids) {
             Ok(column) if err.errors.is_empty() => {
                 self.registry.columns.insert(TypeId::of::<C>(), column);
                 Ok(())
@@ -218,7 +218,7 @@ impl<K: 'static> RegistryInit<K> {
         }
     }
 
-    pub fn build(self) -> Registry<K> {
+    pub fn build(self) -> Registry<K, S> {
         self.registry
     }
 }
@@ -256,37 +256,40 @@ impl<K> Perm<K> {
 }
 
 pub(crate) type Data = Box<dyn Any + Send + Sync>;
-type Finish = fn(Data, &[u32], &[Name]) -> Result<Data, BuildError>;
+type Finish<S> = fn(Data, &[u32], &[S]) -> Result<Data, BuildError<S>>;
 
-struct Stage {
+struct Stage<S> {
     data: Data,
-    finish: Finish,
+    finish: Finish<S>,
 }
 
-pub struct Entry<'a, K> {
-    builder: &'a mut RegistryBuilder<K>,
-    name: Name,
+pub struct Entry<'a, K, S> {
+    builder: &'a mut RegistryBuilder<K, S>,
+    stable_id: S,
     index: Option<u32>,
 }
 
-pub struct EntryRef<'a, K> {
-    builder: &'a mut RegistryBuilder<K>,
+pub struct EntryRef<'a, K, S> {
+    builder: &'a mut RegistryBuilder<K, S>,
     index: u32,
 }
 
-impl<'a, K: 'static> Entry<'a, K> {
-    pub fn create(self) -> Result<EntryRef<'a, K>, RegistryError> {
+impl<'a, K: 'static, S: StableId> Entry<'a, K, S> {
+    pub fn create(self) -> Result<EntryRef<'a, K, S>, RegistryError<S>> {
         match self.index {
-            Some(_) => Err(RegistryError::DuplicateName(self.name)),
+            Some(_) => Err(RegistryError::<S>::DuplicateStableId(self.stable_id)),
             None => Ok(self.insert()),
         }
     }
 
-    pub fn or_create(self) -> EntryRef<'a, K> {
+    pub fn or_create(self) -> EntryRef<'a, K, S> {
         self.or_init(|e| e)
     }
 
-    pub fn or_init(self, f: impl FnOnce(EntryRef<'a, K>) -> EntryRef<'a, K>) -> EntryRef<'a, K> {
+    pub fn or_init(
+        self,
+        f: impl FnOnce(EntryRef<'a, K, S>) -> EntryRef<'a, K, S>,
+    ) -> EntryRef<'a, K, S> {
         match self.index {
             Some(index) => EntryRef {
                 builder: self.builder,
@@ -296,27 +299,29 @@ impl<'a, K: 'static> Entry<'a, K> {
         }
     }
 
-    pub fn or_with<C: Facet>(self, value: C) -> EntryRef<'a, K> {
+    pub fn or_with<C: Facet>(self, value: C) -> EntryRef<'a, K, S> {
         self.or_init(|e| e.with(value))
     }
 
-    pub fn get(self) -> Option<EntryRef<'a, K>> {
+    pub fn get(self) -> Option<EntryRef<'a, K, S>> {
         self.index.map(|index| EntryRef {
             builder: self.builder,
             index,
         })
     }
 
-    fn insert(self) -> EntryRef<'a, K> {
-        let Entry { builder, name, .. } = self;
+    fn insert(self) -> EntryRef<'a, K, S> {
+        let Entry {
+            builder, stable_id, ..
+        } = self;
         let index = builder.next;
         builder.next += 1;
-        builder.index.insert(name, index);
+        builder.index.insert(stable_id, index);
         EntryRef { builder, index }
     }
 }
 
-impl<'a, K: 'static> EntryRef<'a, K> {
+impl<'a, K: 'static, S: StableId> EntryRef<'a, K, S> {
     pub fn property<P: Property>(self) -> Self {
         const { assert!(P::COUNT > 0, "Property::COUNT must be nonzero") };
         self.builder.properties.push((
@@ -345,8 +350,8 @@ impl<'a, K: 'static> EntryRef<'a, K> {
     }
 }
 
-pub struct Registry<K> {
-    names: Vec<Name>,
+pub struct Registry<K, S = Name> {
+    stable_ids: Vec<S>,
     columns: BTreeMap<TypeId, Data>,
     sorted: Vec<u32>,
     bases: Vec<u32>,
@@ -354,7 +359,7 @@ pub struct Registry<K> {
     _k: PhantomData<fn() -> K>,
 }
 
-impl<K> Default for RegistryBuilder<K> {
+impl<K, S> Default for RegistryBuilder<K, S> {
     fn default() -> Self {
         Self {
             index: Default::default(),
@@ -368,17 +373,17 @@ impl<K> Default for RegistryBuilder<K> {
     }
 }
 
-fn make_column<K: 'static, C: Facet>(
+fn make_column<K: 'static, C: Facet, S: StableId>(
     mut pairs: Vec<(u32, C)>,
-    names: &[Name],
-) -> Result<Data, BuildError> {
+    stable_ids: &[S],
+) -> Result<Data, BuildError<S>> {
     pairs.sort_by_key(|pair| pair.0);
-    let mut errors: Vec<BuildErrorKind> = Vec::new();
+    let mut errors: Vec<BuildErrorKind<S>> = Vec::new();
 
     for pair in pairs.windows(2) {
         if pair[0].0 == pair[1].0 {
-            errors.push(BuildErrorKind::DuplicateComponent {
-                entry: names[pair[0].0 as usize].clone(),
+            errors.push(BuildErrorKind::<S>::DuplicateComponent {
+                entry: stable_ids[pair[0].0 as usize].clone(),
                 component: type_name::<C>(),
             });
         }
@@ -395,7 +400,7 @@ fn make_column<K: 'static, C: Facet>(
             Column::<K, C>::sparse(ids, values)
         }
         Storage::Dense(fill) => {
-            let mut values: Vec<C> = (0..names.len()).map(|_| fill()).collect();
+            let mut values: Vec<C> = (0..stable_ids.len()).map(|_| fill()).collect();
             for (id, value) in pairs {
                 values[id as usize] = value;
             }
@@ -403,14 +408,14 @@ fn make_column<K: 'static, C: Facet>(
         }
         Storage::Required => {
             let mut idx = 0;
-            for (id, name) in names.iter().enumerate() {
+            for (id, stable_id) in stable_ids.iter().enumerate() {
                 let present = idx < pairs.len() && pairs[idx].0 == id as u32;
                 while idx < pairs.len() && pairs[idx].0 == id as u32 {
                     idx += 1;
                 }
                 if !present {
-                    errors.push(BuildErrorKind::MissingComponent {
-                        entry: name.clone(),
+                    errors.push(BuildErrorKind::<S>::MissingComponent {
+                        entry: stable_id.clone(),
                         component: type_name::<C>(),
                     });
                 }
@@ -419,29 +424,31 @@ fn make_column<K: 'static, C: Facet>(
         }
     };
     if !errors.is_empty() {
-        Err(BuildError { errors })
+        Err(BuildError::<S> { errors })
     } else {
         Ok(Box::new(column))
     }
 }
 
-fn finish<K: 'static, C: Facet>(
+fn finish<K: 'static, C: Facet, S: StableId>(
     data: Data,
     perm: &[u32],
-    names: &[Name],
-) -> Result<Data, BuildError> {
+    stable_ids: &[S],
+) -> Result<Data, BuildError<S>> {
     let staged: Vec<(u32, C)> = *data.downcast().unwrap();
     let mut pairs: Vec<(u32, C)> = staged
         .into_iter()
         .map(|(old, value)| (perm[old as usize], value))
         .collect();
     pairs.sort_by_key(|pair| pair.0);
-    make_column::<K, C>(pairs, names)
+    make_column::<K, C, S>(pairs, stable_ids)
 }
 
-impl<K: 'static> RegistryBuilder<K> {
-    pub fn iter(&self) -> impl Iterator<Item = (u32, &Name)> {
-        self.index.iter().map(|(name, &index)| (index, name))
+impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &S)> {
+        self.index
+            .iter()
+            .map(|(stable_id, &index)| (index, stable_id))
     }
 
     pub fn declare<C: Facet>(&mut self) {
@@ -453,7 +460,7 @@ impl<K: 'static> RegistryBuilder<K> {
             .entry(TypeId::of::<C>())
             .or_insert_with(|| Stage {
                 data: Box::new(Vec::<(u32, C)>::new()),
-                finish: finish::<K, C>,
+                finish: finish::<K, C, S>,
             })
             .data
             .downcast_mut()
@@ -471,35 +478,35 @@ impl<K: 'static> RegistryBuilder<K> {
         self
     }
 
-    pub fn create(&mut self, name: Name) -> Result<EntryRef<'_, K>, RegistryError> {
-        self.entry(name).create()
+    pub fn create(&mut self, stable_id: S) -> Result<EntryRef<'_, K, S>, RegistryError<S>> {
+        self.entry(stable_id).create()
     }
 
-    pub fn contains(&self, name: impl AsRef<str>) -> bool {
-        self.index.contains_key(name.as_ref())
+    pub fn contains(&self, stable_id: &S) -> bool {
+        self.index.contains_key(stable_id)
     }
 
-    pub fn entry(&mut self, name: Name) -> Entry<'_, K> {
+    pub fn entry(&mut self, stable_id: S) -> Entry<'_, K, S> {
         Entry {
-            index: self.index.get(&name).copied(),
+            index: self.index.get(&stable_id).copied(),
             builder: self,
-            name,
+            stable_id,
         }
     }
 
-    pub fn build_init(self) -> Result<RegistryInit<K>, BuildError> {
+    pub fn build_init(self) -> Result<RegistryInit<K, S>, BuildError<S>> {
         let mut perm = alloc::vec![0u32; self.next as usize];
         let mut by_entry = BTreeMap::new();
         let mut by_slot = BTreeMap::new();
         let mut columns = BTreeMap::new();
         let mut err = BuildError { errors: Vec::new() };
         let mut by_old = alloc::vec![None; self.next as usize];
-        let mut names_by_id = by_old.clone();
-        for (name, &old) in &self.index {
-            by_old[old as usize] = Some(name);
+        let mut stable_id_by_id = by_old.clone();
+        for (stable_id, &old) in &self.index {
+            by_old[old as usize] = Some(stable_id);
         }
         let mut sorted = Vec::with_capacity(self.next as usize);
-        let name_of = |i: u32| by_old[i as usize].unwrap().clone();
+        let stable_id_of = |i: u32| by_old[i as usize].unwrap().clone();
         if let Some(cap) = self.cap
             && cap < self.next
         {
@@ -511,20 +518,20 @@ impl<K: 'static> RegistryBuilder<K> {
         for (i, slot) in self.pins {
             if let Some(&first) = by_entry.get(&i) {
                 err.errors.push(BuildErrorKind::DoublePin {
-                    entry: name_of(i),
+                    entry: stable_id_of(i),
                     first,
                     second: slot,
                 });
             } else if slot >= self.next {
                 err.errors.push(BuildErrorKind::PinOutOfRange {
-                    entry: name_of(i),
+                    entry: stable_id_of(i),
                     slot,
                     len: self.next,
                 });
             } else if let Some(&first) = by_slot.get(&slot) {
                 err.errors.push(BuildErrorKind::PinConflict {
-                    first: name_of(first),
-                    second: name_of(i),
+                    first: stable_id_of(first),
+                    second: stable_id_of(i),
                     slot,
                 });
             } else {
@@ -533,22 +540,22 @@ impl<K: 'static> RegistryBuilder<K> {
             }
         }
         let mut free = (0..self.next).filter(|s| !by_slot.contains_key(s));
-        for (name, &old) in &self.index {
+        for (stable_id, &old) in &self.index {
             let id = match by_entry.get(&old) {
                 Some(&slot) => slot,
                 None => free.next().unwrap(),
             };
             perm[old as usize] = id;
-            names_by_id[id as usize] = Some(name);
+            stable_id_by_id[id as usize] = Some(stable_id);
             sorted.push(id);
         }
-        let names: Vec<Name> = names_by_id
+        let stable_ids: Vec<S> = stable_id_by_id
             .into_iter()
             .map(Option::unwrap)
             .cloned()
             .collect();
         for (type_id, stage) in self.stages {
-            match (stage.finish)(stage.data, &perm, &names) {
+            match (stage.finish)(stage.data, &perm, &stable_ids) {
                 Ok(column) => {
                     columns.insert(type_id, column);
                 }
@@ -563,7 +570,7 @@ impl<K: 'static> RegistryBuilder<K> {
             let list = &mut decls[i as usize];
             if list.iter().any(|d| d.id == decl.id) {
                 err.errors.push(BuildErrorKind::DuplicateProperty {
-                    entry: name_of(i),
+                    entry: stable_id_of(i),
                     property: decl.name,
                 });
             } else {
@@ -592,7 +599,7 @@ impl<K: 'static> RegistryBuilder<K> {
             }
             if overflow {
                 err.errors.push(BuildErrorKind::TooManyStates {
-                    entry: name_of(old as u32),
+                    entry: stable_id_of(old as u32),
                 });
                 continue;
             }
@@ -608,7 +615,7 @@ impl<K: 'static> RegistryBuilder<K> {
             match acc.checked_add(counts[id]) {
                 Some(a) => acc = a,
                 None => err.errors.push(BuildErrorKind::TooManyStatesTotal {
-                    entry: names[id].clone(),
+                    entry: stable_ids[id].clone(),
                 }),
             }
             bases.push(acc);
@@ -616,7 +623,7 @@ impl<K: 'static> RegistryBuilder<K> {
         if err.errors.is_empty() {
             Ok(RegistryInit {
                 registry: Registry {
-                    names,
+                    stable_ids,
                     columns,
                     sorted,
                     bases,
@@ -633,12 +640,12 @@ impl<K: 'static> RegistryBuilder<K> {
         }
     }
 
-    pub fn build(self) -> Result<Registry<K>, BuildError> {
+    pub fn build(self) -> Result<Registry<K, S>, BuildError<S>> {
         Ok(self.build_init()?.build())
     }
 }
 
-impl<K: 'static> Registry<K> {
+impl<K: 'static, S: StableId> Registry<K, S> {
     pub fn total_states(&self) -> u32 {
         *self.bases.last().unwrap()
     }
@@ -682,63 +689,56 @@ impl<K: 'static> Registry<K> {
         ))
     }
 
-    pub fn range<'r>(
-        &'r self,
-        prefix: &str,
-    ) -> impl Iterator<Item = (Id<K>, &'r Name)> + use<'r, K> {
-        let start = self
-            .sorted
-            .partition_point(|&i| self.names[i as usize].as_str() < prefix);
-        let len = self.sorted[start..]
-            .partition_point(|&i| self.names[i as usize].as_str().starts_with(prefix));
-        self.sorted[start..start + len]
-            .iter()
-            .map(|&i| (Id::from_raw(i), &self.names[i as usize]))
-    }
-
-    pub fn builder() -> RegistryBuilder<K> {
+    pub fn builder() -> RegistryBuilder<K, S> {
         RegistryBuilder::new()
     }
     pub fn column<C: Facet>(&self) -> Option<&Column<K, C>> {
         self.columns.get(&TypeId::of::<C>())?.downcast_ref()
     }
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.stable_ids.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.stable_ids.is_empty()
     }
 
-    pub fn id(&self, name: impl AsRef<str>) -> Option<Id<K>> {
+    pub fn id<Query>(&self, stable_id: &Query) -> Option<Id<K>>
+    where
+        S: Borrow<Query>,
+        Query: Ord + ?Sized,
+    {
         self.sorted
-            .binary_search_by(|&i| self.names[i as usize].as_str().cmp(name.as_ref()))
+            .binary_search_by(|&i| self.stable_ids[i as usize].borrow().cmp(stable_id))
             .ok()
             .map(|i| Id::from_raw(self.sorted[i]))
     }
 
-    pub fn name(&self, id: Id<K>) -> Option<&Name> {
-        self.names.get(id.index())
+    pub fn stable_id(&self, id: Id<K>) -> Option<&S> {
+        self.stable_ids.get(id.index())
     }
 
-    pub fn names(&self) -> &[Name] {
-        &self.names
+    pub fn stable_ids(&self) -> &[S] {
+        &self.stable_ids
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (Id<K>, &Name)> {
-        self.names
+    pub fn iter(&self) -> impl Iterator<Item = (Id<K>, &S)> {
+        self.stable_ids
             .iter()
             .enumerate()
             .map(|(i, n)| (Id::from_raw(i as u32), n))
     }
 
-    pub fn remap<'a>(&self, palette: impl IntoIterator<Item = &'a Name>) -> Remap<K> {
+    pub fn remap<'a>(&self, palette: impl IntoIterator<Item = &'a S>) -> Remap<K, S>
+    where
+        S: 'a,
+    {
         let mut slots = Vec::new();
         let mut missing = Vec::new();
-        for (i, name) in palette.into_iter().enumerate() {
-            let id = self.id(name);
+        for (i, stable_id) in palette.into_iter().enumerate() {
+            let id = self.id(stable_id);
             if id.is_none() {
-                missing.push((i, name.clone()));
+                missing.push((i, stable_id.clone()));
             }
             slots.push(id);
         }
@@ -746,12 +746,12 @@ impl<K: 'static> Registry<K> {
     }
 }
 
-pub struct Remap<K> {
+pub struct Remap<K, S> {
     pub slots: Vec<Option<Id<K>>>,
-    pub missing: Vec<(usize, Name)>,
+    pub missing: Vec<(usize, S)>,
 }
 
-impl<K> Remap<K> {
+impl<K, S> Remap<K, S> {
     pub fn is_complete(&self) -> bool {
         self.missing.is_empty()
     }
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn ids_follow_name_order() {
-        let mut b = RegistryBuilder::<Block>::new();
+        let mut b = RegistryBuilder::<Block, Name>::new();
         b.create(n("t:c")).unwrap();
         b.create(n("t:a")).unwrap();
         b.create(n("t:b")).unwrap();
@@ -852,11 +852,11 @@ mod tests {
 
     #[test]
     fn duplicate_name() {
-        let mut b = RegistryBuilder::<Block>::new();
+        let mut b = RegistryBuilder::<Block, Name>::new();
         b.create(n("t:a")).unwrap();
         assert_eq!(
             b.create(n("t:a")).err(),
-            Some(RegistryError::DuplicateName(n("t:a")))
+            Some(RegistryError::DuplicateStableId(n("t:a")))
         )
     }
 
