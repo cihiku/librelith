@@ -7,6 +7,7 @@
   clang,
   formatter,
   cocogitto,
+  cargo-edit,
 }:
 mkShell {
   packages = [
@@ -17,5 +18,6 @@ mkShell {
     just
     formatter
     cocogitto
+    cargo-edit
   ];
 }
