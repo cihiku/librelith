@@ -99,7 +99,7 @@ impl<S: StableId> RegistriesBuilder<S> {
     }
 }
 
-pub struct RegistriesInit<S> {
+pub struct RegistriesInit<S = Name> {
     inits: BTreeMap<TypeId, (Data, FinishKind, S)>,
 }
 

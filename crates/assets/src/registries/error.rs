@@ -2,16 +2,16 @@ use core::{error::Error, fmt::Display};
 
 use alloc::vec::Vec;
 
-use crate::BuildError;
+use crate::{BuildError, Name};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum RegistriesError<S> {
+pub enum RegistriesError<S = Name> {
     DuplicateKind(&'static str),
     DuplicateKindStableId(S),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct RegistriesBuildError<S> {
+pub struct RegistriesBuildError<S = Name> {
     pub(super) errors: Vec<RegistriesBuildErrorKind<S>>,
 }
 
@@ -30,7 +30,7 @@ impl<S: core::fmt::Display> Display for RegistriesBuildError<S> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct RegistriesBuildErrorKind<S> {
+pub struct RegistriesBuildErrorKind<S = Name> {
     pub stable_id: S,
     pub build: BuildError<S>,
 }

@@ -44,18 +44,18 @@ impl<K> Perm<K> {
 pub(crate) type Data = Box<dyn Any + Send + Sync>;
 type Finish<S> = fn(Data, &[u32], &[S]) -> Result<Data, BuildError<S>>;
 
-struct Stage<S> {
+struct Stage<S = Name> {
     data: Data,
     finish: Finish<S>,
 }
 
-pub struct Entry<'a, K, S> {
+pub struct Entry<'a, K, S = Name> {
     builder: &'a mut RegistryBuilder<K, S>,
     stable_id: S,
     index: Option<u32>,
 }
 
-pub struct EntryRef<'a, K, S> {
+pub struct EntryRef<'a, K, S = Name> {
     builder: &'a mut RegistryBuilder<K, S>,
     index: u32,
 }

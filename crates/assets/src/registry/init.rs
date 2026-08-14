@@ -6,10 +6,10 @@ use core::{
 use alloc::vec::Vec;
 
 use crate::{
-    BuildError, BuildErrorKind, Facet, Id, Perm, Registry, StableId, registry::make_column,
+    BuildError, BuildErrorKind, Facet, Id, Name, Perm, Registry, StableId, registry::make_column,
 };
 
-pub struct RegistryInit<K, S> {
+pub struct RegistryInit<K, S = Name> {
     pub(crate) registry: Registry<K, S>,
     pub(crate) perm: Perm<K>,
 }

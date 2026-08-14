@@ -2,13 +2,15 @@ use core::error::Error;
 
 use alloc::vec::Vec;
 
+use crate::Name;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegistryError<S> {
+pub enum RegistryError<S = Name> {
     DuplicateStableId(S),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildError<S> {
+pub struct BuildError<S = Name> {
     pub(crate) errors: Vec<BuildErrorKind<S>>,
 }
 
@@ -20,7 +22,7 @@ impl<S> BuildError<S> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum BuildErrorKind<S> {
+pub enum BuildErrorKind<S = Name> {
     MissingComponent {
         entry: S,
         component: &'static str,
