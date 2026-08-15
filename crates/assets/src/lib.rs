@@ -85,7 +85,9 @@
 extern crate alloc;
 
 pub mod facet;
+pub(crate) mod hash;
 pub mod id;
+pub(crate) mod index_map;
 pub mod name;
 pub mod registries;
 pub mod registry;

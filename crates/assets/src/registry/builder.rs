@@ -8,12 +8,12 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 use crate::{
     BuildError, BuildErrorKind, Column, Facet, Id, Name, Property, Registry, RegistryError,
     RegistryInit, StableId, Storage,
+    index_map::IndexMap,
     state::{PropertyDeclaration, PropertySlot},
 };
 
 pub struct RegistryBuilder<K, S = Name> {
-    index: BTreeMap<S, u32>,
-    next: u32,
+    index: IndexMap<S>,
     stages: BTreeMap<TypeId, Stage<S>>,
     pins: Vec<(u32, u32)>,
     properties: Vec<(u32, PropertyDeclaration)>,
@@ -52,6 +52,7 @@ struct Stage<S = Name> {
 pub struct Entry<'a, K, S = Name> {
     builder: &'a mut RegistryBuilder<K, S>,
     stable_id: S,
+    hash: u64,
     index: Option<u32>,
 }
 
@@ -98,11 +99,12 @@ impl<'a, K: 'static, S: StableId> Entry<'a, K, S> {
 
     fn insert(self) -> EntryRef<'a, K, S> {
         let Entry {
-            builder, stable_id, ..
+            builder,
+            stable_id,
+            hash,
+            ..
         } = self;
-        let index = builder.next;
-        builder.next += 1;
-        builder.index.insert(stable_id, index);
+        let index = builder.index.insert_by_hash_unchecked(hash, stable_id);
         EntryRef { builder, index }
     }
 }
@@ -141,7 +143,6 @@ impl<K, S> Default for RegistryBuilder<K, S> {
         Self {
             index: Default::default(),
             stages: Default::default(),
-            next: Default::default(),
             pins: Default::default(),
             properties: Default::default(),
             cap: Default::default(),
@@ -223,9 +224,14 @@ fn finish<K: 'static, C: Facet, S: StableId>(
 
 impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
     pub fn iter(&self) -> impl Iterator<Item = (u32, &S)> {
-        self.index
+        let mut v: Vec<(u32, &S)> = self
+            .index
             .iter()
-            .map(|(stable_id, &index)| (index, stable_id))
+            .enumerate()
+            .map(|(i, s)| (i as u32, s))
+            .collect();
+        v.sort_unstable_by(|a, b| a.1.cmp(b.1));
+        v.into_iter()
     }
 
     pub fn declare<C: Facet>(&mut self) {
@@ -260,55 +266,56 @@ impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
     }
 
     pub fn contains(&self, stable_id: &S) -> bool {
-        self.index.contains_key(stable_id)
+        self.index.find(stable_id).is_some()
     }
 
     pub fn entry(&mut self, stable_id: S) -> Entry<'_, K, S> {
+        let hash = IndexMap::fixed_hash_of(&stable_id);
         Entry {
-            index: self.index.get(&stable_id).copied(),
+            index: self.index.find_by_hash(hash, &stable_id),
+            hash,
             builder: self,
             stable_id,
         }
     }
 
     pub fn build_init(self) -> Result<RegistryInit<K, S>, BuildError<S>> {
-        let mut perm = alloc::vec![0u32; self.next as usize];
+        let RegistryBuilder {
+            index,
+            stages,
+            pins,
+            properties,
+            cap,
+            ..
+        } = self;
+        let mut perm = alloc::vec![0u32; index.len()];
         let mut by_entry = BTreeMap::new();
         let mut by_slot = BTreeMap::new();
-        let mut columns = BTreeMap::new();
-        let mut err = BuildError { errors: Vec::new() };
-        let mut by_old = alloc::vec![None; self.next as usize];
-        let mut stable_id_by_id = by_old.clone();
-        for (stable_id, &old) in &self.index {
-            by_old[old as usize] = Some(stable_id);
-        }
-        let mut sorted = Vec::with_capacity(self.next as usize);
-        let stable_id_of = |i: u32| by_old[i as usize].unwrap().clone();
-        if let Some(cap) = self.cap
-            && cap < self.next
+        let mut errors = Vec::new();
+        let n = index.len();
+        let next = n as u32;
+        if let Some(cap) = cap
+            && cap < next
         {
-            err.errors.push(BuildErrorKind::CapExceeded {
-                len: self.next,
-                cap,
-            });
+            errors.push(BuildErrorKind::CapExceeded { len: next, cap });
         }
-        for (i, slot) in self.pins {
+        for (i, slot) in pins {
             if let Some(&first) = by_entry.get(&i) {
-                err.errors.push(BuildErrorKind::DoublePin {
-                    entry: stable_id_of(i),
+                errors.push(BuildErrorKind::DoublePin {
+                    entry: index[i as usize].clone(),
                     first,
                     second: slot,
                 });
-            } else if slot >= self.next {
-                err.errors.push(BuildErrorKind::PinOutOfRange {
-                    entry: stable_id_of(i),
+            } else if slot >= next {
+                errors.push(BuildErrorKind::PinOutOfRange {
+                    entry: index[i as usize].clone(),
                     slot,
-                    len: self.next,
+                    len: next,
                 });
             } else if let Some(&first) = by_slot.get(&slot) {
-                err.errors.push(BuildErrorKind::PinConflict {
-                    first: stable_id_of(first),
-                    second: stable_id_of(i),
+                errors.push(BuildErrorKind::PinConflict {
+                    first: index[first as usize].clone(),
+                    second: index[i as usize].clone(),
                     slot,
                 });
             } else {
@@ -316,45 +323,32 @@ impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
                 by_slot.insert(slot, i);
             }
         }
-        let mut free = (0..self.next).filter(|s| !by_slot.contains_key(s));
-        for (stable_id, &old) in &self.index {
+        let mut order: Vec<u32> = (0..next).collect();
+        order.sort_unstable_by(|&a, &b| index[a as usize].cmp(&index[b as usize]));
+        let mut sorted = Vec::with_capacity(index.len());
+        let mut free = (0..next).filter(|s| !by_slot.contains_key(s));
+        for &old in &order {
             let id = match by_entry.get(&old) {
                 Some(&slot) => slot,
                 None => free.next().unwrap(),
             };
             perm[old as usize] = id;
-            stable_id_by_id[id as usize] = Some(stable_id);
             sorted.push(id);
         }
-        let stable_ids: Vec<S> = stable_id_by_id
-            .into_iter()
-            .map(Option::unwrap)
-            .cloned()
-            .collect();
-        for (type_id, stage) in self.stages {
-            match (stage.finish)(stage.data, &perm, &stable_ids) {
-                Ok(column) => {
-                    columns.insert(type_id, column);
-                }
-                Err(mut e) => {
-                    err.errors.append(&mut e.errors);
-                }
-            }
-        }
-        let n = self.next as usize;
-        let mut decls: Vec<Vec<PropertyDeclaration>> = (0..n).map(|_| Vec::new()).collect();
-        for (i, decl) in self.properties {
+        let mut decls: Vec<Vec<PropertyDeclaration>> =
+            (0..index.len()).map(|_| Vec::new()).collect();
+        for (i, decl) in properties {
             let list = &mut decls[i as usize];
             if list.iter().any(|d| d.id == decl.id) {
-                err.errors.push(BuildErrorKind::DuplicateProperty {
-                    entry: stable_id_of(i),
+                errors.push(BuildErrorKind::DuplicateProperty {
+                    entry: index[i as usize].clone(),
                     property: decl.name,
                 });
             } else {
                 list.push(decl);
             }
         }
-        let mut slots: Vec<Vec<PropertySlot>> = (0..n).map(|_| Vec::new()).collect();
+        let mut slots: Vec<Vec<PropertySlot>> = (0..next).map(|_| Vec::new()).collect();
         let mut counts = alloc::vec![1u32; n];
         for old in 0..n {
             let mut stride: u32 = 1;
@@ -375,8 +369,8 @@ impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
                 }
             }
             if overflow {
-                err.errors.push(BuildErrorKind::TooManyStates {
-                    entry: stable_id_of(old as u32),
+                errors.push(BuildErrorKind::TooManyStates {
+                    entry: index[old].clone(),
                 });
                 continue;
             }
@@ -385,19 +379,35 @@ impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
             slots[id] = sl;
             counts[id] = stride;
         }
+        let mut stable_id_by_id: Vec<Option<S>> = (0..n).map(|_| None).collect();
+        for (old, stable_id) in index.iter().cloned().enumerate() {
+            stable_id_by_id[perm[old] as usize] = Some(stable_id);
+        }
+        let stable_ids: Vec<S> = stable_id_by_id.into_iter().map(Option::unwrap).collect();
+        let mut columns = BTreeMap::new();
+        for (type_id, stage) in stages {
+            match (stage.finish)(stage.data, &perm, &stable_ids) {
+                Ok(column) => {
+                    columns.insert(type_id, column);
+                }
+                Err(mut e) => {
+                    errors.append(&mut e.errors);
+                }
+            }
+        }
         let mut bases = Vec::with_capacity(n + 1);
         let mut acc: u32 = 0;
         bases.push(0);
         for id in 0..n {
             match acc.checked_add(counts[id]) {
                 Some(a) => acc = a,
-                None => err.errors.push(BuildErrorKind::TooManyStatesTotal {
+                None => errors.push(BuildErrorKind::TooManyStatesTotal {
                     entry: stable_ids[id].clone(),
                 }),
             }
             bases.push(acc);
         }
-        if err.errors.is_empty() {
+        if errors.is_empty() {
             Ok(RegistryInit {
                 registry: Registry {
                     stable_ids,
@@ -413,7 +423,7 @@ impl<K: 'static, S: StableId> RegistryBuilder<K, S> {
                 },
             })
         } else {
-            Err(err)
+            Err(BuildError { errors })
         }
     }
 

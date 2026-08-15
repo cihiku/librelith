@@ -9,8 +9,8 @@ use core::{
 /// Valid only for lifetime of `Registry`
 pub struct Id<K>(u32, PhantomData<fn() -> K>);
 pub struct StateId<K>(u32, PhantomData<fn() -> K>);
-pub trait StableId: Ord + Clone + Send + Sync + 'static {}
-impl<T: Ord + Clone + Send + Sync + 'static> StableId for T {}
+pub trait StableId: Ord + Clone + Hash + Send + Sync + 'static {}
+impl<T: Ord + Clone + Hash + Send + Sync + 'static> StableId for T {}
 
 impl<K> StateId<K> {
     pub const fn from_raw(raw: u32) -> Self {
