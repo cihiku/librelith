@@ -11,11 +11,11 @@ pub mod state;
 pub use state::Slot;
 
 pub use entry::EntryRegistryView;
-pub use facet::{ColumnRegistryView, ColumnView};
+pub use facet::{ColumnRegistryView, ColumnView, Facet};
 pub use id::{
-    AnyEntryId, AnyRawId, AnyStateId, EntryId, EntrySpace, Erased, IdSpace, RawId, StateId,
-    StateSpace,
+    AnyEntryId, AnyRawId, AnyStateId, EntryId, EntrySpace, Erased, FacetSpace, IdSpace, KindSpace,
+    PropertySpace, RawId, StateId, StateSpace, ValueSpace,
 };
-pub use key::{Keyspace, StableKey};
-pub use registry::RegistryView;
-pub use state::StateRegistryView;
+pub use key::{KeyTable, StableKey};
+pub use registry::{Kind, RegistryView};
+pub use state::{Property, StateRegistryView};

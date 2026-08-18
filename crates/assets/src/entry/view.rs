@@ -1,16 +1,9 @@
-use crate::{AnyEntryId, Keyspace};
+use crate::{AnyEntryId, EntrySpace, KeyTable};
 
-pub struct EntryRegistryView<'a, V: Keyspace> {
+#[derive(Clone, Copy)]
+pub struct EntryRegistryView<'a> {
     /// `entries[AnyEntryId.index()]` is entry `id`'s key.
-    pub entries: &'a [V::Entry],
+    pub entries: KeyTable<'a, EntrySpace>,
     /// `sorted[i]` is the AnyEntryId whose key ranks `i`-th.
     pub sorted: &'a [AnyEntryId],
 }
-
-impl<'a, V: Keyspace> Clone for EntryRegistryView<'a, V> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, V: Keyspace> Copy for EntryRegistryView<'a, V> {}

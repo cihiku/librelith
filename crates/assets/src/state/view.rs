@@ -1,6 +1,7 @@
-use crate::{Keyspace, Slot};
+use crate::{KeyTable, PropertySpace, Slot, ValueSpace};
 
-pub struct StateRegistryView<'a, V: Keyspace> {
+#[derive(Clone, Copy)]
+pub struct StateRegistryView<'a> {
     /// `bases[AnyEntryId.index()]` Entry `e` owns states
     /// `bases[e]..bases[e + 1]`; `bases[n]` is the total.
     pub bases: &'a [u32],
@@ -10,20 +11,12 @@ pub struct StateRegistryView<'a, V: Keyspace> {
     /// Slot runs, `slot_offsets`-indexed.
     pub slots: &'a [Slot],
     /// Distinct property keys, sorted. `Slot::property` is index.
-    pub properties: &'a [V::Property],
+    pub properties: KeyTable<'a, PropertySpace>,
     /// Value keys for all properties: property `p`'s
     /// values are `values[value_runs[p]..value_runs[p+1]]`,
     /// and value `raw` is `values[value_runs[p] + raw]`.
     /// Run length equals `Slot::count`
-    pub values: &'a [V::Value],
+    pub values: KeyTable<'a, ValueSpace>,
     /// prefix offsets into `values`
     pub value_runs: &'a [u32],
 }
-
-impl<'a, V: Keyspace> Clone for StateRegistryView<'a, V> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, V: Keyspace> Copy for StateRegistryView<'a, V> {}

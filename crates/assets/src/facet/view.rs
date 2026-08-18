@@ -1,8 +1,9 @@
-use crate::{AnyEntryId, Keyspace};
+use crate::{AnyEntryId, FacetSpace, KeyTable};
 
-pub struct ColumnRegistryView<'a, V: Keyspace> {
+#[derive(Clone, Copy)]
+pub struct ColumnRegistryView<'a> {
     /// Column keys, sorted.
-    pub facets: &'a [V::Facet],
+    pub facets: KeyTable<'a, FacetSpace>,
     /// `false` = dense
     pub sparse: &'a [bool],
     /// prefix offsets into the value space: column `i`
@@ -20,6 +21,7 @@ pub struct ColumnRegistryView<'a, V: Keyspace> {
     pub layouts: &'a [Option<u64>],
 }
 
+#[derive(Clone, Copy)]
 pub struct ColumnView<'a> {
     /// `None` = dense
     pub ids: Option<&'a [AnyEntryId]>,
@@ -27,19 +29,3 @@ pub struct ColumnView<'a> {
     pub bytes: &'a [u8],
     pub layout: Option<u64>,
 }
-
-impl<'a, V: Keyspace> Clone for ColumnRegistryView<'a, V> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, V: Keyspace> Copy for ColumnRegistryView<'a, V> {}
-
-impl<'a> Clone for ColumnView<'a> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a> Copy for ColumnView<'a> {}

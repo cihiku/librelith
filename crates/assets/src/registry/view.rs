@@ -1,16 +1,16 @@
-use crate::{ColumnRegistryView, EntryRegistryView, Keyspace, StateRegistryView};
+use crate::{ColumnRegistryView, EntryRegistryView, StateRegistryView};
 
-pub struct RegistryView<'a, V: Keyspace> {
-    pub kind: Option<&'a V::Kind>,
-    pub entries: EntryRegistryView<'a, V>,
-    pub states: Option<StateRegistryView<'a, V>>,
-    pub columns: Option<ColumnRegistryView<'a, V>>,
+pub struct RegistryView<'a> {
+    pub kind: Option<&'a ()>,
+    pub entries: EntryRegistryView<'a>,
+    pub states: Option<StateRegistryView<'a>>,
+    pub columns: Option<ColumnRegistryView<'a>>,
 }
 
-impl<'a, V: Keyspace> Clone for RegistryView<'a, V> {
+impl<'a> Clone for RegistryView<'a> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, V: Keyspace> Copy for RegistryView<'a, V> {}
+impl<'a> Copy for RegistryView<'a> {}

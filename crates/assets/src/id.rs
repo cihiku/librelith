@@ -12,6 +12,11 @@ pub type AnyRawId<P> = RawId<P, Erased>;
 
 pub enum EntrySpace {}
 pub enum StateSpace {}
+pub enum PropertySpace {}
+pub enum ValueSpace {}
+pub enum FacetSpace {}
+pub enum KindSpace {}
+
 pub enum Erased {}
 
 pub trait IdSpace {
