@@ -19,3 +19,11 @@ pub struct StateRegistryView<'a, V: Keyspace> {
     /// prefix offsets into `values`
     pub value_runs: &'a [u32],
 }
+
+impl<'a, V: Keyspace> Clone for StateRegistryView<'a, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, V: Keyspace> Copy for StateRegistryView<'a, V> {}

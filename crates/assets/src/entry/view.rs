@@ -6,3 +6,11 @@ pub struct EntryRegistryView<'a, V: Keyspace> {
     /// `sorted[i]` is the AnyEntryId whose key ranks `i`-th.
     pub sorted: &'a [AnyEntryId],
 }
+
+impl<'a, V: Keyspace> Clone for EntryRegistryView<'a, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, V: Keyspace> Copy for EntryRegistryView<'a, V> {}

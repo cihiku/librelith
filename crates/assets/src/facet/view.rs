@@ -27,3 +27,19 @@ pub struct ColumnView<'a> {
     pub bytes: &'a [u8],
     pub layout: Option<u64>,
 }
+
+impl<'a, V: Keyspace> Clone for ColumnRegistryView<'a, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, V: Keyspace> Copy for ColumnRegistryView<'a, V> {}
+
+impl<'a> Clone for ColumnView<'a> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a> Copy for ColumnView<'a> {}
