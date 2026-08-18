@@ -8,6 +8,7 @@ use core::{
 
 #[repr(transparent)]
 pub struct RawId<P, K>(u32, PhantomData<fn() -> (P, K)>);
+pub type AnyRawId<P> = RawId<P, Erased>;
 
 pub enum EntrySpace {}
 pub enum StateSpace {}
@@ -26,10 +27,20 @@ impl IdSpace for StateSpace {
 
 pub type EntryId<K> = RawId<EntrySpace, K>;
 pub type StateId<K> = RawId<StateSpace, K>;
-pub type AnyEntryId = RawId<EntrySpace, Erased>;
-pub type AnyStateId = RawId<StateSpace, Erased>;
+pub type AnyEntryId = AnyRawId<EntrySpace>;
+pub type AnyStateId = AnyRawId<StateSpace>;
+
+impl<P> AnyRawId<P> {
+    pub const fn into_typed<K>(self) -> RawId<P, K> {
+        RawId::from_raw(self.raw())
+    }
+}
 
 impl<P, K> RawId<P, K> {
+    pub const fn erase(self) -> AnyRawId<P> {
+        AnyRawId::from_raw(self.raw())
+    }
+
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw, PhantomData)
     }
